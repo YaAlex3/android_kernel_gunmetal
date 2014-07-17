@@ -257,6 +257,8 @@
 #include <linux/ptrace.h>
 #include <linux/kmemcheck.h>
 #include <linux/irq.h>
+#include <linux/syscalls.h>
+#include <linux/completion.h>
 
 #include <asm/processor.h>
 #include <asm/uaccess.h>
@@ -405,6 +407,7 @@ static struct poolinfo {
  */
 static DECLARE_WAIT_QUEUE_HEAD(random_read_wait);
 static DECLARE_WAIT_QUEUE_HEAD(random_write_wait);
+static DECLARE_WAIT_QUEUE_HEAD(urandom_init_wait);
 static struct fasync_struct *fasync;
 
 static bool debug;
@@ -612,12 +615,14 @@ retry:
 	if (cmpxchg(&r->entropy_count, orig, entropy_count) != orig)
 		goto retry;
 
-	if (!r->initialized && nbits > 0) {
-		r->entropy_total += nbits;
-		if (r->entropy_total > 128) {
-			r->initialized = 1;
-			if (r == &nonblocking_pool)
-				prandom_reseed_late();
+	r->entropy_total += nbits;
+	if (!r->initialized && r->entropy_total > 128) {
+		r->initialized = 1;
+		r->entropy_total = 0;
+		if (r == &nonblocking_pool) {
+			prandom_reseed_late();
+			wake_up_interruptible(&urandom_init_wait);
+			pr_notice("random: %s pool is initialized\n", r->name);
 		}
 	}
 
@@ -654,7 +659,7 @@ struct timer_rand_state {
  */
 void add_device_randomness(const void *buf, unsigned int size)
 {
-	unsigned long time = random_get_entropy() ^ jiffies;
+	unsigned long time = get_cycles() ^ jiffies;
 
 	mix_pool_bytes(&input_pool, buf, size, NULL);
 	mix_pool_bytes(&input_pool, &time, sizeof(time), NULL);
@@ -662,6 +667,8 @@ void add_device_randomness(const void *buf, unsigned int size)
 	mix_pool_bytes(&nonblocking_pool, &time, sizeof(time), NULL);
 }
 EXPORT_SYMBOL(add_device_randomness);
+
+static struct timer_rand_state input_timer_state;
 
 /*
  * This function adds entropy to the entropy "pool" by using timing
@@ -689,7 +696,7 @@ static void add_timer_randomness(struct timer_rand_state *state, unsigned num)
 		goto out;
 
 	sample.jiffies = jiffies;
-	sample.cycles = random_get_entropy();
+	sample.cycles = get_cycles();
 	sample.num = num;
 	mix_pool_bytes(&input_pool, &sample, sizeof(sample), NULL);
 
@@ -735,7 +742,16 @@ out:
 void add_input_randomness(unsigned int type, unsigned int code,
 				 unsigned int value)
 {
-	return;
+	static unsigned char last_value;
+
+	/* ignore autorepeat and the like */
+	if (value == last_value)
+		return;
+
+	DEBUG_ENT("input event\n");
+	last_value = value;
+	add_timer_randomness(&input_timer_state,
+			     (type << 4) ^ code ^ (code >> 4) ^ value);
 }
 EXPORT_SYMBOL_GPL(add_input_randomness);
 
@@ -747,7 +763,7 @@ void add_interrupt_randomness(int irq, int irq_flags)
 	struct fast_pool	*fast_pool = &__get_cpu_var(irq_randomness);
 	struct pt_regs		*regs = get_irq_regs();
 	unsigned long		now = jiffies;
-	__u32			input[4], cycles = random_get_entropy();
+	__u32			input[4], cycles = get_cycles();
 
 	input[0] = cycles ^ jiffies;
 	input[1] = irq;
@@ -1015,13 +1031,14 @@ static ssize_t extract_entropy_user(struct entropy_store *r, void __user *buf,
 {
 	ssize_t ret = 0, i;
 	__u8 tmp[EXTRACT_SIZE];
+	int large_request = (nbytes > 256);
 
 	trace_extract_entropy_user(r->name, nbytes, r->entropy_count, _RET_IP_);
 	xfer_secondary_pool(r, nbytes);
 	nbytes = account(r, nbytes, 0, 0);
 
 	while (nbytes) {
-		if (need_resched()) {
+		if (large_request && need_resched()) {
 			if (signal_pending(current)) {
 				if (ret == 0)
 					ret = -ERESTARTSYS;
@@ -1155,9 +1172,66 @@ void rand_initialize_disk(struct gendisk *disk)
 #endif
 
 static ssize_t
+_random_read(int nonblock, char __user *buf, size_t nbytes)
+{
+	ssize_t n, retval = 0, count = 0;
+
+	if (nbytes == 0)
+		return 0;
+
+	while (nbytes > 0) {
+		n = nbytes;
+		if (n > SEC_XFER_SIZE)
+			n = SEC_XFER_SIZE;
+
+		DEBUG_ENT("reading %zu bits\n", n*8);
+
+		n = extract_entropy_user(&blocking_pool, buf, n);
+
+		if (n < 0) {
+			retval = n;
+			break;
+		}
+
+		DEBUG_ENT("read got %zd bits (%zd still needed)\n",
+			  n*8, (nbytes-n)*8);
+
+		if (n == 0) {
+			if (nonblock) {
+				retval = -EAGAIN;
+				break;
+			}
+
+			DEBUG_ENT("sleeping?\n");
+
+			wait_event_interruptible(random_read_wait,
+				input_pool.entropy_count >=
+						 random_read_wakeup_thresh);
+
+			DEBUG_ENT("awake\n");
+
+			if (signal_pending(current)) {
+				retval = -ERESTARTSYS;
+				break;
+			}
+
+			continue;
+		}
+
+		count += n;
+		buf += n;
+		nbytes -= n;
+		break;		/* This break makes the device work */
+				/* like a named pipe */
+	}
+
+	return (count ? count : retval);
+}
+
+static ssize_t
 random_read(struct file *file, char __user *buf, size_t nbytes, loff_t *ppos)
 {
-        return extract_entropy_user(&nonblocking_pool, buf, nbytes);
+	return _random_read(file->f_flags & O_NONBLOCK, buf, nbytes);
 }
 
 static ssize_t
@@ -1285,6 +1359,29 @@ const struct file_operations urandom_fops = {
 	.fasync = random_fasync,
 	.llseek = noop_llseek,
 };
+
+SYSCALL_DEFINE3(getrandom, char __user *, buf, size_t, count,
+		unsigned int, flags)
+{
+	if (flags & ~(GRND_NONBLOCK|GRND_RANDOM))
+		return -EINVAL;
+
+	if (count > INT_MAX)
+		count = INT_MAX;
+
+	if (flags & GRND_RANDOM)
+		return _random_read(flags & GRND_NONBLOCK, buf, count);
+
+	if (unlikely(nonblocking_pool.initialized == 0)) {
+		if (flags & GRND_NONBLOCK)
+			return -EAGAIN;
+		wait_event_interruptible(urandom_init_wait,
+					 nonblocking_pool.initialized);
+		if (signal_pending(current))
+			return -ERESTARTSYS;
+	}
+	return urandom_read(NULL, buf, count, NULL);
+}
 
 /***************************************************************
  * Random UUID interface
@@ -1434,7 +1531,7 @@ unsigned int get_random_int(void)
 
 	hash = get_cpu_var(get_random_int_hash);
 
-	hash[0] += current->pid + jiffies + random_get_entropy();
+	hash[0] += current->pid + jiffies + get_cycles();
 	md5_transform(hash, random_int_secret);
 	ret = hash[0];
 	put_cpu_var(get_random_int_hash);
