@@ -157,6 +157,22 @@ const char *task_event_names[] = {"PUT_PREV_TASK", "PICK_NEXT_TASK",
 ATOMIC_NOTIFIER_HEAD(migration_notifier_head);
 ATOMIC_NOTIFIER_HEAD(load_alert_notifier_head);
 
+#ifdef smp_mb__before_atomic
+void __smp_mb__before_atomic(void)
+{
+	smp_mb__before_atomic();
+}
+EXPORT_SYMBOL(__smp_mb__before_atomic);
+#endif
+
+#ifdef smp_mb__after_atomic
+void __smp_mb__after_atomic(void)
+{
+	smp_mb__after_atomic();
+}
+EXPORT_SYMBOL(__smp_mb__after_atomic);
+#endif
+
 void start_bandwidth_timer(struct hrtimer *period_timer, ktime_t period)
 {
 	unsigned long delta;
@@ -1289,7 +1305,9 @@ static inline u64 scale_exec_time(u64 delta, struct rq *rq)
 	unsigned int cur_freq = rq->cur_freq;
 	int sf;
 
-	if (unlikely(cur_freq > max_possible_freq))
+	if (unlikely(cur_freq > max_possible_freq ||
+		     (cur_freq == rq->max_freq &&
+		      rq->max_freq < rq->max_possible_freq)))
 		cur_freq = rq->max_possible_freq;
 
 	delta = div64_u64(delta  * cur_freq, max_possible_freq);
@@ -2692,10 +2710,9 @@ unsigned long wait_task_inactive(struct task_struct *p, long match_state)
 		 * is actually now running somewhere else!
 		 */
 		while (task_running(rq, p)) {
-			if (match_state && unlikely(cpu_relaxed_read_long
-				(&(p->state)) != match_state))
+			if (match_state && unlikely(p->state != match_state))
 				return 0;
-			cpu_read_relax();
+			cpu_relax();
 		}
 
 		/*
@@ -3021,7 +3038,7 @@ void scheduler_ipi(void)
 {
 	int cpu = smp_processor_id();
 
-	if (llist_empty_relaxed(&this_rq()->wake_list)
+	if (llist_empty(&this_rq()->wake_list)
 			&& !tick_nohz_full_cpu(cpu)
 			&& !got_nohz_idle_kick()
 			&& !got_boost_kick())
@@ -3187,8 +3204,8 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
 	 * If the owning (remote) cpu is still in the middle of schedule() with
 	 * this task as prev, wait until its done referencing the task.
 	 */
-	while (cpu_relaxed_read(&(p->on_cpu)))
-		cpu_read_relax();
+	while (p->on_cpu)
+		cpu_relax();
 	/*
 	 * Pairs with the smp_wmb() in finish_lock_switch().
 	 */
@@ -5593,7 +5610,7 @@ int idle_cpu(int cpu)
 		return 0;
 
 #ifdef CONFIG_SMP
-	if (!llist_empty_relaxed(&rq->wake_list))
+	if (!llist_empty(&rq->wake_list))
 		return 0;
 #endif
 
@@ -6381,7 +6398,6 @@ static void __cond_resched(void)
 
 int __sched _cond_resched(void)
 {
-	rcu_cond_resched();
 	if (should_resched()) {
 		__cond_resched();
 		return 1;
@@ -6400,18 +6416,15 @@ EXPORT_SYMBOL(_cond_resched);
  */
 int __cond_resched_lock(spinlock_t *lock)
 {
-	bool need_rcu_resched = rcu_should_resched();
 	int resched = should_resched();
 	int ret = 0;
 
 	lockdep_assert_held(lock);
 
-	if (spin_needbreak(lock) || resched || need_rcu_resched) {
+	if (spin_needbreak(lock) || resched) {
 		spin_unlock(lock);
 		if (resched)
 			__cond_resched();
-		else if (unlikely(need_rcu_resched))
-			rcu_resched();
 		else
 			cpu_relax();
 		ret = 1;
@@ -6425,7 +6438,6 @@ int __sched __cond_resched_softirq(void)
 {
 	BUG_ON(!in_softirq());
 
-	rcu_cond_resched();  /* BH disabled OK, just recording QSes. */
 	if (should_resched()) {
 		local_bh_enable();
 		__cond_resched();
@@ -9828,6 +9840,23 @@ static void cpu_cgroup_css_offline(struct cgroup *cgrp)
 	sched_offline_group(tg);
 }
 
+static int
+cpu_cgroup_allow_attach(struct cgroup *cgrp, struct cgroup_taskset *tset)
+{
+	const struct cred *cred = current_cred(), *tcred;
+	struct task_struct *task;
+
+	cgroup_taskset_for_each(task, cgrp, tset) {
+		tcred = __task_cred(task);
+
+		if ((current != task) && !capable(CAP_SYS_NICE) &&
+		    cred->euid != tcred->uid && cred->euid != tcred->suid)
+			return -EACCES;
+	}
+
+	return 0;
+}
+
 static int cpu_cgroup_can_attach(struct cgroup *cgrp,
 				 struct cgroup_taskset *tset)
 {
@@ -10217,6 +10246,7 @@ struct cgroup_subsys cpu_cgroup_subsys = {
 	.css_offline	= cpu_cgroup_css_offline,
 	.can_attach	= cpu_cgroup_can_attach,
 	.attach		= cpu_cgroup_attach,
+	.allow_attach	= subsys_cgroup_allow_attach,
 	.exit		= cpu_cgroup_exit,
 	.subsys_id	= cpu_cgroup_subsys_id,
 	.base_cftypes	= cpu_files,
