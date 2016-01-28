@@ -23,7 +23,7 @@
 #include <linux/err.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
-
+#include <linux/display_state.h>
 #include "mdss_dsi.h"
 #include <linux/msm_mdp.h>
 #include <asm/uaccess.h>
@@ -215,6 +215,13 @@ static void create_cabc_mode_switch_file(void)
     }else{
 		printk("[DISPLAY] : create create_cabc_mode_switch_file failed!\n");
     }
+}
+
+bool display_on = true;
+
+bool is_display_on()
+{
+	return display_on;
 }
 
 void mdss_dsi_panel_pwm_cfg(struct mdss_dsi_ctrl_pdata *ctrl)
@@ -819,6 +826,8 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 		return -EINVAL;
 	}
 
+	display_on = true;
+
 	pinfo = &pdata->panel_info;
 	ctrl = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
@@ -916,6 +925,8 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 	if ( (asus_lcd_id[0]=='2') || (asus_lcd_id[0]=='3') )
 	    resume2s=0;
 	
+	display_on = false;
+
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_BLANK;
 	pr_debug("%s:-\n", __func__);
