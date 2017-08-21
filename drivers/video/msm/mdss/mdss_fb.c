@@ -85,16 +85,11 @@ int g_charger_cnt = 2;
 #endif
 
 #define MDSS_BRIGHT_TO_BL_DIMMER(out, v) do {\
-					out = ((v) * (v) * 255  / 4095 + (v) * (255 - (v)) / 32);\
-					} while (0)
-#define MDSS_BRIGHT_TO_BL_DIMMER_LOW(out, v) do {\
 					out = (((v) - 2) * 255 / 250);\
 					} while (0)
 
 bool backlight_dimmer = false;
 module_param(backlight_dimmer, bool, 0755);
-bool backlight_low_dimmer = false;
-module_param(backlight_low_dimmer, bool, 0755);
 
 static struct fb_info *fbi_list[MAX_FBI_LIST];
 static int fbi_list_index;
@@ -276,14 +271,10 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 		value = mfd->panel_info->brightness_max;
 
 	if (backlight_dimmer) {
-		if (backlight_low_dimmer) {
-			if (value < 3)
-				bl_lvl = 1;
-			else
-				MDSS_BRIGHT_TO_BL_DIMMER_LOW(bl_lvl, value);
-		} else {
+		if (value < 3)
+			bl_lvl = 1;
+		else
 			MDSS_BRIGHT_TO_BL_DIMMER(bl_lvl, value);
-		}
 	} else {
 		/* This maps android backlight level 0 to 255 into
 		   driver backlight level 0 to bl_max with rounding */
@@ -304,7 +295,7 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 
 static struct led_classdev backlight_led = {
 	.name           = "lcd-backlight",
-	.brightness     = MDSS_MAX_BL_BRIGHTNESS,
+	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
 	.brightness_set = mdss_fb_set_bl_brightness,
 	.max_brightness = MDSS_MAX_BL_BRIGHTNESS,
 };
@@ -892,11 +883,18 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	mfd->mdp_fb_page_protection = MDP_FB_PAGE_PROTECTION_WRITECOMBINE;
 
 	mfd->ext_ad_ctrl = -1;
-	mfd->bl_level = 0;
+	if (mfd->panel_info && mfd->panel_info->brightness_max > 0)
+		MDSS_BRIGHT_TO_BL(mfd->bl_level,
+			backlight_led.brightness, mfd->panel_info->bl_max,
+					mfd->panel_info->brightness_max);
+	else
+		mfd->bl_level = 0;
+
 	mfd->bl_scale = 1024;
 	mfd->bl_min_lvl = 30;
 	mfd->ad_bl_level = 0;
 	mfd->fb_imgType = MDP_RGBA_8888;
+	mfd->calib_mode_bl = 0;
 
 	if (mfd->panel.type == MIPI_VIDEO_PANEL ||
 				mfd->panel.type == MIPI_CMD_PANEL) {
@@ -1277,9 +1275,22 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 		return;
 	}
 
-	if ((((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
-		|| !mfd->allow_bl_update) && !IS_CALIB_MODE_BL(mfd)) ||
+	if (
+#ifndef CONFIG_LEDS_TRIGGER_BACKLIGHT
+	    (((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
+		|| !mfd->allow_bl_updated) && !IS_CALIB_MODE_BL(mfd)) ||
+#endif
 		mfd->panel_info->cont_splash_enabled) {
+		if((0 == temp) &&(0 == strcmp(boot_to_charger_mode,"charger"))
+			&& ((asus_lcd_id[0] == '0') || (asus_lcd_id[0] == '1')))
+		{
+		    pr_debug("%s: turn off backlight for 550 hd panel\n",__FUNCTION__);
+			pdata = dev_get_platdata(&mfd->pdev->dev);
+			ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
+				panel_data);
+			if ((pdata) && (ctrl_pdata))
+				gpio_set_value((ctrl_pdata->bklt_en_gpio), 0);
+		}
 		mfd->unset_bl_level = bkl_lvl;
 		return;
 	} else {
@@ -3036,6 +3047,7 @@ static int __mdss_fb_display_thread(void *data)
 
 	mdss_fb_release_kickoff(mfd);
 	atomic_set(&mfd->commits_pending, 0);
+	atomic_set(&mfd->kickoff_pending, 0);
 	wake_up_all(&mfd->idle_wait_q);
 
 	return ret;
@@ -3649,7 +3661,6 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 	case MSMFB_DISPLAY_COMMIT:
 		ret = mdss_fb_display_commit(info, argp);
 		break;
-
 
 	case MSMFB_LPM_ENABLE:
 		ret = copy_from_user(&dsi_mode, argp, sizeof(dsi_mode));
