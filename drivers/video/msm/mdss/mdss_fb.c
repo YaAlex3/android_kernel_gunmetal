@@ -52,6 +52,7 @@
 #include <linux/msm_iommu_domains.h>
 
 #include "mdss_fb.h"
+#include "mdss_dsi.h"
 #include "mdss_mdp_splash_logo.h"
 #include "mdss_mdp.h"
 
@@ -82,6 +83,14 @@ extern int g_dcs_bl_value;
 int g_charger_cnt = 2;
 //--- ASUS_BSP: Louis
 #endif
+
+#define MDSS_BRIGHT_TO_BL_DIMMER(out, v) do {\
+					out = (((v) - 2) * 255 / 250);\
+					} while (0)
+
+bool backlight_dimmer = false;
+module_param(backlight_dimmer, bool, 0755);
+
 static struct fb_info *fbi_list[MAX_FBI_LIST];
 static int fbi_list_index;
 
@@ -261,10 +270,17 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (value > mfd->panel_info->brightness_max)
 		value = mfd->panel_info->brightness_max;
 
-	/* This maps android backlight level 0 to 255 into
-	   driver backlight level 0 to bl_max with rounding */
-	MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
-				mfd->panel_info->brightness_max);
+	if (backlight_dimmer) {
+		if (value < 3)
+			bl_lvl = 1;
+		else
+			MDSS_BRIGHT_TO_BL_DIMMER(bl_lvl, value);
+	} else {
+		/* This maps android backlight level 0 to 255 into
+		   driver backlight level 0 to bl_max with rounding */
+		MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+					mfd->panel_info->brightness_max);
+	}
 
 	if (!bl_lvl && value)
 		bl_lvl = 1;
@@ -733,7 +749,7 @@ static ssize_t mdss_set_rgb(struct device *dev,
 	if (b < 0 || b > 32768)
 		return -EINVAL;
 
-	pr_info("%s: r=%d g=%d b=%d", __func__, r, g, b);
+	pr_info("r=%d g=%d b=%d\n", r, g, b);
 
 	memset(&pcc_cfg, 0, sizeof(struct mdp_pcc_cfg_data));
 
@@ -817,6 +833,7 @@ static void mdss_fb_shutdown(struct platform_device *pdev)
 
 	pr_info("[Display] %s: fb%d from %s \n", __func__, mfd->index, task->comm);
 	/* ASUS_BSP: Louis --	*/
+	fb_shutdown = 1;
 	mfd->shutdown_pending = true;
 	lock_fb_info(mfd->fbi);
 	mdss_fb_release_all(mfd->fbi, true);
@@ -1239,6 +1256,7 @@ static void mdss_fb_scale_bl(struct msm_fb_data_type *mfd, u32 *bl_lvl)
 void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 {
 	struct mdss_panel_data *pdata;
+	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	u32 temp = bkl_lvl;
 	bool bl_notify_needed = false;
 
