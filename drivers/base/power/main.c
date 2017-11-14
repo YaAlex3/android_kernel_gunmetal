@@ -38,6 +38,7 @@
 void pm_print_active_wakeup_sources(void);
 #endif
 
+unsigned int pm_pwrcs_ret=0;//[Power]Add for wakeup debug
 typedef int (*pm_callback_t)(struct device *);
 
 /*
