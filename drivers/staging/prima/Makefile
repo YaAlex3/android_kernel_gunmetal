@@ -639,6 +639,13 @@ ifeq ($(CONFIG_WLAN_OFFLOAD_PACKETS),y)
 CDEFINES += -DWLAN_FEATURE_OFFLOAD_PACKETS
 endif
 
+# Kill GCC 7 warnings
+EXTRA_CFLAGS += -Wno-misleading-indentation -Wno-switch-unreachable
+
+ifeq ($(CONFIG_WLAN_OFFLOAD_PACKETS),y)
+CDEFINES += -DWLAN_FEATURE_OFFLOAD_PACKETS
+endif
+
 KBUILD_CPPFLAGS += $(CDEFINES)
 
 # Module information used by KBuild framework
