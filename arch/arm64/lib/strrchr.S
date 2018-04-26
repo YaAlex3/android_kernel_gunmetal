@@ -28,9 +28,10 @@
 #include <linux/linkage.h>
 #include <asm/assembler.h>
 
-/* Assumptions:
+/*
+ * Assumptions:
  *
- * ARMv8-a, AArch64
+ * ARMv8-1, AArch64
  * Neon Available.
  */
 
@@ -166,6 +167,6 @@ ENTRY(strrchr)
 	csel	result, result, xzr, ne
 
 	ret
+ENDPROC(strrchr)
 
 END(strrchr)
-
