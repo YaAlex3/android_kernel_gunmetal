@@ -8457,8 +8457,32 @@ VOS_STATUS hdd_release_firmware(char *pFileName,v_VOID_t *pCtx)
 {
    VOS_STATUS status = VOS_STATUS_SUCCESS;
    hdd_context_t *pHddCtx = (hdd_context_t*)pCtx;
+   static char *WLAN_NV_FILE = NULL;
    ENTER();
 
+   /* ze550kl and ze550kg have the same project id, but ze550kg only have 3G sku, and others belongs to ze550kl */
+   if (ASUS_ZE550KL == asus_PRJ_ID) {
+      /* RF SKU US:2 3G:3 TW:4 WW:5 CUCC:6 CMCC:7 */
+      if (0 == strncmp(asus_project_RFsku, "3", 2))
+         WLAN_NV_FILE = ZE550KG_WLAN_NV_FILE;
+      else if (0 == strncmp(asus_project_RFsku, "7", 2))
+         WLAN_NV_FILE = ZE550KL_CMCC_WLAN_NV_FILE;
+      /* ze551kl_US is LTE and FHD */
+      else if ((0 == strncmp(asus_project_lte, "1", 2)) && (0 == strncmp(asus_project_hd, "0", 2)) && (0 == strncmp(asus_project_RFsku, "2", 2)))
+         WLAN_NV_FILE = ZE551KL_WLAN_NV_FILE;
+      else
+         WLAN_NV_FILE = ZE550KL_WLAN_NV_FILE;
+   }
+   else if (ASUS_ZE600KL == asus_PRJ_ID)
+      WLAN_NV_FILE = ZE600KL_WLAN_NV_FILE;
+   else if (ASUS_ZX550KL == asus_PRJ_ID)
+      WLAN_NV_FILE = ZX550KL_WLAN_NV_FILE;
+   else if (ASUS_ZD550KL == asus_PRJ_ID) {
+      if (0 == strncmp(asus_project_RFsku, "7", 2))
+         WLAN_NV_FILE = ZD550KL_CMCC_WLAN_NV_FILE;
+      else
+         WLAN_NV_FILE = ZD550KL_CUCC_WLAN_NV_FILE;
+   }
 
    if (!strcmp(WLAN_FW_FILE, pFileName)) {
    
@@ -8507,7 +8531,32 @@ VOS_STATUS hdd_request_firmware(char *pfileName,v_VOID_t *pCtx,v_VOID_t **ppfw_d
    int status;
    VOS_STATUS retval = VOS_STATUS_SUCCESS;
    hdd_context_t *pHddCtx = (hdd_context_t*)pCtx;
+   static char *WLAN_NV_FILE = NULL;
    ENTER();
+
+   /* ze550kl and ze550kg have the same project id, but ze550kg only have 3G sku, and others belongs to ze550kl */
+   if (ASUS_ZE550KL == asus_PRJ_ID) {
+      /* RF SKU US:2 3G:3 TW:4 WW:5 CUCC:6 CMCC:7 */
+      if (0 == strncmp(asus_project_RFsku, "3", 2))
+         WLAN_NV_FILE = ZE550KG_WLAN_NV_FILE;
+      else if (0 == strncmp(asus_project_RFsku, "7", 2))
+         WLAN_NV_FILE = ZE550KL_CMCC_WLAN_NV_FILE;
+      /* ze551kl_US is LTE and FHD */
+      else if ((0 == strncmp(asus_project_lte, "1", 2)) && (0 == strncmp(asus_project_hd, "0", 2)) && (0 == strncmp(asus_project_RFsku, "2", 2)))
+         WLAN_NV_FILE = ZE551KL_WLAN_NV_FILE;
+      else
+         WLAN_NV_FILE = ZE550KL_WLAN_NV_FILE;
+   }
+   else if (ASUS_ZE600KL == asus_PRJ_ID)
+      WLAN_NV_FILE = ZE600KL_WLAN_NV_FILE;
+   else if (ASUS_ZX550KL == asus_PRJ_ID)
+      WLAN_NV_FILE = ZX550KL_WLAN_NV_FILE;
+   else if (ASUS_ZD550KL == asus_PRJ_ID) {
+      if (0 == strncmp(asus_project_RFsku, "7", 2))
+         WLAN_NV_FILE = ZD550KL_CMCC_WLAN_NV_FILE;
+      else
+         WLAN_NV_FILE = ZD550KL_CUCC_WLAN_NV_FILE;
+   }
 
    if( (!strcmp(WLAN_FW_FILE, pfileName)) ) {
 
@@ -15041,14 +15090,14 @@ wlan_hdd_is_GO_power_collapse_allowed (hdd_context_t* pHddCtx)
                  FL("GO started"));
           return TRUE;
      }
-     else{
+     else
           /* wait till GO changes its interface to p2p device */
           hddLog(VOS_TRACE_LEVEL_INFO,
-                 FL("Del_bss called, avoid apps suspend"));}
+                 FL("Del_bss called, avoid apps suspend"));
           return FALSE;
 
 }
-/* Decide whether to allow/not the apps power collapse.
+/* Decide whether to allow/not the apps power collapse. 
  * Allow apps power collapse if we are in connected state.
  * if not, allow only if we are in IMPS  */
 v_BOOL_t hdd_is_apps_power_collapse_allowed(hdd_context_t* pHddCtx)
@@ -15057,8 +15106,8 @@ v_BOOL_t hdd_is_apps_power_collapse_allowed(hdd_context_t* pHddCtx)
     tANI_BOOLEAN scanRspPending = csrNeighborRoamScanRspPending(pHddCtx->hHal);
     tANI_BOOLEAN inMiddleOfRoaming = csrNeighborMiddleOfRoaming(pHddCtx->hHal);
     hdd_config_t *pConfig = pHddCtx->cfg_ini;
-    hdd_adapter_list_node_t *pAdapterNode = NULL, *pNext = NULL;
-    hdd_adapter_t *pAdapter = NULL;
+    hdd_adapter_list_node_t *pAdapterNode = NULL, *pNext = NULL; 
+    hdd_adapter_t *pAdapter = NULL; 
     VOS_STATUS status;
     tVOS_CONCURRENCY_MODE concurrent_state = 0;
 
