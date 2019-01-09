@@ -993,8 +993,8 @@ static ssize_t show_time_in_state(struct device *dev, struct device_attribute *a
 	unsigned int max_state = devfreq->profile->max_state;
 
         err = devfreq_update_status(devfreq, devfreq->previous_freq);
-        if (err)
-                return 0;
+        if (err){
+                return 0;}
 
 		for (i = 0; i < max_state; i++) {
                 len += sprintf(buf + len, "%u %u\n", devfreq->profile->freq_table[i],

@@ -112,11 +112,11 @@ static const struct file_operations lpsensor_proc_fops = {
 
 
 int create_asusproc_lpsensor_status_entry( void )
-{   
+{
    lpsensor_entry = proc_create("asus_lpsensor_status", S_IWUGO| S_IRUGO, NULL,&lpsensor_proc_fops);
-    if (!lpsensor_entry)
+    if (!lpsensor_entry){
 
-        return -ENOMEM;
+        return -ENOMEM;}
 
     	return 0;
 
@@ -129,15 +129,15 @@ int create_asusproc_lpsensor_status_entry( void )
 
 //     Calibration Formula:
 
-//     y = f(x) 
+//     y = f(x)
 
 //  -> ax - by = constant_k
 
 //     a is f(x2) - f(x1) , b is x2 - x1
 
-////=========================================            
+////=========================================
 
-int static calibration_light(int x_big, int x_small, int report_lux){        
+int static calibration_light(int x_big, int x_small, int report_lux){
 
                     int y_1000 = 1000;
                     int y_200 = 200;
