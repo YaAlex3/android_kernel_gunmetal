@@ -178,10 +178,10 @@ int __init pm_autosleep_init(void)
     pmsp_dev.index = 0;
     INIT_WORK(&pms_printer, pms_printer_func);
     ret = switch_dev_register(&pmsp_dev);
-    if (ret < 0)
-        printk("%s:fail to register switch power_manager_printer \n",__func__);
-    else
-        printk("%s:success to register pmsp switch \n",__func__);
+    if (ret < 0){
+        printk("%s:fail to register switch power_manager_printer \n",__func__);}
+    else{
+        printk("%s:success to register pmsp switch \n",__func__);}
 	//[---]Debug for active wakelock before entering suspend
 	autosleep_ws = wakeup_source_register("autosleep");
 	if (!autosleep_ws)
