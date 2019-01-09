@@ -155,14 +155,14 @@ static void create_lcd_id_proc_file(void)
 
 static struct proc_dir_entry *cabc_mode_switch;
 
-static ssize_t cabc_mode_switch_proc_write(struct file *file, const const char __user *buff, size_t count,loff_t *ops)
+static ssize_t cabc_mode_switch_proc_write(struct file *file, const char __user *buff, size_t count,loff_t *ops)
 {
 	char temp;
 	//char oldval = cabc_mode[1];
 
 	if(count > 0)
 	{
-		if(get_user(temp,buff))			
+		if(get_user(temp,buff))
 			return -EFAULT;
 
 		if(temp > '3' || temp < '0'){
