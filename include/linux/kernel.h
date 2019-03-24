@@ -35,6 +35,42 @@ enum BOOT_MODE
 extern enum BOOT_MODE g_ASUS_bootmode;
 // --- ASUS_BSP : add for boot mode
 
+//ASUS_BSP: Louis +++
+enum {
+	ZE500KL_LCD_AUO = 0,
+	ZE500KL_LCD_TIANMA,
+	ZE500KL_LCD_BOE,
+	A500_HSD
+};
+extern int g_asus_lcdID; 
+//ASUS_BSP: Louis ---
+
+extern bool g_Charger_mode; //ASUS BSP Austin_T +++
+
+//ASUS_BSP: Deeo +++
+enum DEVICE_MCPID
+{
+	HYNIX_8G_8G = 0xf,
+	HYNIX_8G_16G = 0xe,
+	HYNIX_16G_16G = 0xd,
+	SAMSUNG_8G_8G = 0xc,
+	SAMSUNG_8G_16G = 0xb,
+	SAMSUNG_16G_16G = 0xa,
+	HYNIX_32G_16G = 0x9,
+	HYNIX_16G_8G = 0x8,
+	SAMSUNG_16G_8G = 0x7,
+
+	MCP_ID_UNKNOW = 0xFF,
+};
+extern enum DEVICE_MCPID g_mcp_id;
+//ASUS_BSP: Deeo ---
+//ASUS_BSP +++ Jeffery "add for uart / kernel log control"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+extern int g_uart_dbg_mode;
+extern int g_user_klog_mode;
+#endif
+//ASUS_BSP --- Jeffery "add for uart / kernel log control"
+
 extern enum BOOT_MODE g_ASUS_bootmode;
 
 #define USHRT_MAX	((u16)(~0U))
