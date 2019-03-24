@@ -43,6 +43,18 @@
 
 DEFINE_LED_TRIGGER(bl_led_trigger);
 
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+extern void rt4532_suspend(void);
+extern void rt4532_resume(void);
+extern void ftxxxx_ts_suspend(void);
+extern void ftxxxx_ts_resume(void);
+#else
+//ASUS_BSP:Freeman +++
+extern void ftxxxx_ts_suspend(void);
+extern void ftxxxx_ts_resume(void);
+//ASUS_BSP:Freeman ---
+#endif
+
 #define PANEL_CABC_MASK	0x3
 //extern void rt4532_set(void);
 
@@ -841,17 +853,26 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 
 	if (ctrl->on_cmds.cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->on_cmds);
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+    set_tcon_cmd(cabc_mode, ARRAY_SIZE(cabc_mode)); //ASUS_BSP: Louis+++, restore cabc level
+	
+	rt4532_resume();/*Austin+++*/
 
-	if ( (asus_lcd_id[0]=='2') || (asus_lcd_id[0]=='3') ){
-		queue_delayed_work(cabc_enable_workqueue, &cabc_delay_work, msecs_to_jiffies(2000));
-	}else{
-		set_tcon_cabc(cabc_mode[1]);	//ASUS_BSP: wigman+++, restore cabc level
-		gpio_set_value((ctrl->bklt_en_gpio), 1);
-	}
+	ftxxxx_ts_resume();/*Jacob+++*/
+
+#ifdef CONFIG_QPNP_VM_BMS_SUSPEND_PREDICT
+	bms_modify_soc_late_resume();
+#endif
+#else
+
+	ftxxxx_ts_resume();		//Freeman +++
+
+#endif
 
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
 	pr_debug("%s:-\n", __func__);
+	printk("[Display] %s: --\n", __func__);
 	return 0;
 }
 
@@ -910,9 +931,20 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 				panel_data);
 
 	pr_debug("%s: ctrl=%pK ndx=%d\n", __func__, ctrl, ctrl->ndx);
+	printk("[Display] %s: ++\n", __func__);
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
 
-	if ( (asus_lcd_id[0]=='2') && (asus_lcd_id[0]=='3') )
-		cancel_delayed_work_sync(&cabc_delay_work);
+	rt4532_suspend();/*Austin+++*/
+
+	ftxxxx_ts_suspend();/*jacob+++*/
+
+#ifdef CONFIG_QPNP_VM_BMS_SUSPEND_PREDICT
+	bms_modify_soc_early_suspend();
+#endif
+#else
+
+	ftxxxx_ts_suspend();		//Freeman +++
+#endif
 
 	if (pinfo->dcs_cmd_by_left) {
 		if (ctrl->ndx != DSI_CTRL_LEFT)
@@ -930,6 +962,7 @@ static int mdss_dsi_panel_off(struct mdss_panel_data *pdata)
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_BLANK;
 	pr_debug("%s:-\n", __func__);
+	printk("[Display] %s: --\n", __func__);
 	return 0;
 }
 

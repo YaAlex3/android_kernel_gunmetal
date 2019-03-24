@@ -404,6 +404,9 @@ static void check_gesture(struct ftxxxx_ts_data *data, int gesture_id)
 
 	printk("[FT5X46][Touch] %s :  gesture_id = 0x%x\n ", __func__, gesture_id);
 
+	if (EnableProximityCheck && !ftxxxx_ts->cover_mode_eable)
+		Ps_status = proximity_status();
+
 	if (!Ps_status) {
 		switch (gesture_id) {
 //ASUS_BSP : Freeman add for touch gesture mode support part in ZC550KL ++++
