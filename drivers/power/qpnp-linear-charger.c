@@ -623,14 +623,6 @@ static int qpnp_lbc_is_usb_chg_plugged_in(struct qpnp_lbc_chip *chip)
 	return (usbin_valid_rt_sts & USB_IN_VALID_MASK) ? 1 : 0;
 }
 
-int is_usb_chg_plugged_in(void)
-{
-	int rc;
-	rc = qpnp_lbc_is_usb_chg_plugged_in(g_lbc_chip);
-	return rc;
-}
-EXPORT_SYMBOL_GPL(is_usb_chg_plugged_in);
-
 static int qpnp_lbc_charger_enable(struct qpnp_lbc_chip *chip, int reason,
 					int enable)
 {

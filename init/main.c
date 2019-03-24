@@ -187,6 +187,43 @@ static int get_lcd_uniqueId(char *str)
 __setup("LCD_UNIQUE_ID=", get_lcd_uniqueId);
 //--- ASUS_BSP :  Add for lcd unique
 
+uint32_t zc550kl_pcb_rev_val = ZC550KL_8916_MP;
+static int set_zc550kl_pcb_rev(char *str)
+{
+	if(NULL == str || strlen(str) == 0)
+	{
+		zc550kl_pcb_rev_val = ZC550KL_8916_MP;
+		return 0;
+	}
+
+	if(0 == strcmp(str, "0"))
+	{
+		zc550kl_pcb_rev_val = ZC550KL_8916_MP;
+		//printk("PCB_VER: ZC550KL_8916_MP\n");
+	}
+	else if(0 == strcmp(str, "1"))
+	{
+		zc550kl_pcb_rev_val = ZC550KL_8939_PR;
+		//printk("PCB_VER: ZC550KL_8939_PR\n");
+	}
+	else if(0 == strcmp(str, "2"))
+	{
+		zc550kl_pcb_rev_val = ZC550KL_8939_ER;
+		//printk("PCB_VER: ZC550KL_8939_ER\n");
+	}
+
+	//printk("PCB_VER val = %u\n", zc550kl_pcb_rev_val);
+
+	return 0;
+}
+early_param("pcb_rev", set_zc550kl_pcb_rev);
+
+uint32_t get_zc550kl_pcb_rev(void)
+{
+	return zc550kl_pcb_rev_val;
+}
+EXPORT_SYMBOL(get_zc550kl_pcb_rev);
+
 //+++ ASUS_BSP :  Add for asus_project_stage @wigman_sun
 char asus_project_stage[2] = {0};
 EXPORT_SYMBOL(asus_project_stage);
