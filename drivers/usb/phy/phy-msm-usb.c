@@ -51,7 +51,6 @@
 #include <linux/qpnp/qpnp-adc.h>
 
 #include <linux/msm-bus.h>
-#include <linux/syscalls.h>
 
 #define MSM_USB_BASE	(motg->regs)
 #define MSM_USB_PHY_CSR_BASE (motg->phy_csr_regs)
@@ -59,7 +58,7 @@
 #define DRIVER_NAME	"msm_otg"
 
 #define ID_TIMER_FREQ		(jiffies + msecs_to_jiffies(500))
-#define CHG_RECHECK_DELAY	(jiffies + msecs_to_jiffies(2000))
+#define CHG_RECHECK_DELAY	(jiffies + msecs_to_jiffies(3000))
 #define ULPI_IO_TIMEOUT_USEC	(10 * 1000)
 #define USB_PHY_3P3_VOL_MIN	3050000 /* uV */
 #define USB_PHY_3P3_VOL_MAX	3300000 /* uV */
@@ -78,6 +77,7 @@
 #define USB_SUSPEND_DELAY_TIME	(500 * HZ/1000) /* 500 msec */
 
 #define USB_DEFAULT_SYSTEM_CLOCK 80000000	/* 80 MHz */
+extern bool g_Charger_mode;
 
 enum msm_otg_phy_reg_mode {
 	USB_PHY_REG_OFF,
@@ -101,11 +101,6 @@ module_param(floated_charger_enable , bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(floated_charger_enable,
 	"Whether to enable floated charger");
 
-/* by default debugging is enabled */
-static unsigned int enable_dbg_log = 1;
-module_param(enable_dbg_log, uint, S_IRUGO | S_IWUSR);
-MODULE_PARM_DESC(enable_dbg_log, "Debug buffer events");
-
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 #if defined(CONFIG_FB)
 #include <linux/notifier.h>
@@ -115,11 +110,10 @@ struct notifier_block fb_notif;
 #endif
 
 enum host_auto_sw {
-       HOST_AUTO_NONE = 0,
-       HOST_AUTO_HOST,
+	HOST_AUTO_NONE = 0,
+	HOST_AUTO_HOST,
 };
 
-const char *usb_device_list[] = {"/Removable/USBdisk1", "/sys/class/net/eth0", "/sys/class/sound/card1"};
 static struct workqueue_struct *early_suspend_delay_wq;
 static struct delayed_work early_suspend_delay_work;
 static struct work_struct late_resume_work;
@@ -127,12 +121,18 @@ static struct wake_lock early_suspend_wlock;
 void asus_otg_host_mode_cleanup(void);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 
+/* by default debugging is enabled */
+static unsigned int enable_dbg_log = 1;
+module_param(enable_dbg_log, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(enable_dbg_log, "Debug buffer events");
+
 static DECLARE_COMPLETION(pmic_vbus_init);
 struct completion gadget_init;
 static struct msm_otg *the_msm_otg;
 static bool debug_aca_enabled;
 static bool debug_bus_voting_enabled;
 static bool mhl_det_in_progress;
+static int is_usb_chg_plugged=0;
 
 static struct regulator *hsusb_3p3;
 static struct regulator *hsusb_1p8;
@@ -161,10 +161,13 @@ static char bus_clkname[USB_NUM_BUS_CLOCKS][20] = {"bimc_clk", "snoc_clk",
 static bool bus_clk_rate_set;
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
+static int g_phy_parameter_a = 0;
 static int g_phy_parameter_b = 0;
 static int g_phy_parameter_c = 0;
 static int g_phy_parameter_d = 0;
+static bool g_phy_parameter_reset = 0;
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
+static int fix_delay = 500;
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
 static bool g_vbus_is_on = false;
@@ -174,11 +177,13 @@ static bool g_vbus_is_on = false;
 static bool g_screen_off = false;
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
 
+static bool g_screenoff_id_ground = false;
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Enable manual mode switching"
 #include <linux/proc_fs.h>
-/*     This line is from A500KL msm_otg driver.
-       However, there is already an motg member for indication of current mode (host/client).
-       We will use motg->host_mode instead of add a new one
+/*	This line is from A500KL msm_otg driver.
+	However, there is already an motg member for indication of current mode (host/client).
+	We will use motg->host_mode instead of add a new one
 static int g_host_mode = 0;
 */
 static void asus_otg_mode_switch(enum usb_mode_type req_mode);
@@ -186,12 +191,43 @@ static struct proc_dir_entry *asus_otg_proc_root;
 static int g_host_none_mode = 0;
 static int g_keep_power_on = 0;
 static int g_suspend_delay_work_run = 0;
-static int old_id_state = -1;
+int static old_id_state = -1;
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Enable manual mode switching"
+
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+static int g_support_device = 0;
+static int NEW_PCB = 1;
+extern int set_otg_battery_current_limit(int value);
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
+
+//ASUS_BSP+++ ShowWang "read HW ID"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+#include <linux/asus_global.h>
+static int HW_ID = 0;
+static bool otg_current_sdp = 1;
+extern int g_CHG_mode;
+#endif
+//ASUS_BSP--- ShowWang "read HW ID"
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+static int g_otg_poweron = 0;
+static struct delayed_work asus_check_disable_5V_work;
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+static int g_keep_apple_power_on = 0;
+static int g_apple_attach = 0;
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+//ASUS_BSP+++ Show_Wang "Add monitor to check otg suspend status in suspend mode"
+#define MSM_OTG_SUSPEND_CHECK_TIMEOUT 10000L
+//ASUS_BSP--- Show_Wang "Add monitor to check otg suspend status in suspend mode"
+#endif
+//ASUS_BSP---ShowWang "Enable otg poweron switching"
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
 static void msm_hsusb_vbus_power(struct msm_otg *motg, bool on);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
 static const char *chg_to_string(enum usb_chg_type chg_type);
 static struct delayed_work asus_chg_unknown_delay_work;
@@ -205,7 +241,14 @@ static struct mutex msm_otg_mutex;
 //ASUS_BSP+++ Landice "[ZE500KL][USBH] Enable/Disable VBUS output on ID events"
 static int g_charger_state;
 
-#if !defined(CONFIG_SMB358_CHARGER)
+//ASUS_BSP+++ Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
+#if defined(CONFIG_SMB1360_CHARGER_FG)
+extern int asus_set_Charger(int usb_state);
+#endif
+//ASUS_BSP--- Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
+
+#if !defined(CONFIG_SMB358_CHARGER) &&  !defined(CONFIG_SMB1360_CHARGER_FG)
+//ASUS_BSP:Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
 enum {
 	USB_IN,
 	AC_IN,
@@ -221,6 +264,11 @@ enum {
 #else
 #include "../../power/asus_battery.h"
 #endif
+
+/* ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+static int g_host_charging_mode = 0;
+/* ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+
 static char *charger_event_to_str(int usb_state)
 {
 	switch (usb_state) {
@@ -237,17 +285,84 @@ static char *charger_event_to_str(int usb_state)
 	default:		return "UNKNOWN_EVENT";
 	}
 }
-/* ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
-static int g_skipped_5v;
-/* ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
-
-//#if defined(CONFIG_ASUS_EVT_LOG)
-int ASUSEvtlog_Power(int usb_state)
+static void asus_otg_set_charger(int usb_state)
 {
-        char *evt_mode_string;
+	struct msm_otg *motg = the_msm_otg;
+	char *evt_mode_string;
 	evt_mode_string="";
 
-        switch(usb_state) {
+	if (usb_state == g_charger_state) {
+		/* Two CABLE_OUT events are often seen at the same time, due to a_sess_vld,b_sess_vld comes first and b_sess_end comes later
+		   Therefore, we block the same event set. We initialize g_charger_state to -1 so that first call won't be skipped */
+		printk("[usb_otg] skip asus_otg_set_charger(%s) (already set)\n", charger_event_to_str(usb_state));
+//ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
+/* ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
+#if defined(CONFIG_SMB358_CHARGER)
+	} else if (ENABLE_5V == usb_state) {
+		if (g_host_charging_mode) {
+			printk("[usb_otg] External power source detected - skip ENABLE_5V\n");
+/* ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+			g_charger_state = g_host_charging_mode;
+			setSMB358Charger(g_host_charging_mode);
+/* ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+		} else {
+			printk("[usb_otg] %s\n", charger_event_to_str(usb_state));
+			g_charger_state = usb_state;
+			setSMB358Charger(usb_state);
+		}
+	} else if (DISABLE_5V == usb_state) {
+		if (g_host_charging_mode) {
+			printk("[usb_otg] Send CABLE_OUT for host clear with external power\n");
+			g_charger_state = CABLE_OUT;
+			setSMB358Charger(CABLE_OUT);
+			g_host_charging_mode = 0;
+		} else {
+			printk("[usb_otg] %s\n", charger_event_to_str(usb_state));
+			g_charger_state = usb_state;
+			setSMB358Charger(usb_state);
+		}
+/* ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
+//ASUS_BSP+++ Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
+#elif defined(CONFIG_SMB1360_CHARGER_FG)
+	} else if (ENABLE_5V == usb_state) {
+		if (g_host_charging_mode) {
+			printk("[usb_otg] External power source detected - skip ENABLE_5V\n");
+/* ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+			g_charger_state = g_host_charging_mode;
+			asus_set_Charger(g_host_charging_mode);
+/* ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+		} else {
+			printk("[usb_otg] %s\n", charger_event_to_str(usb_state));
+			g_charger_state = usb_state;
+			asus_set_Charger(usb_state);
+		}
+	} else if (DISABLE_5V == usb_state) {
+		if (g_host_charging_mode) {
+			printk("[usb_otg] Send CABLE_OUT for host clear with external power\n");
+			g_charger_state = CABLE_OUT;
+			asus_set_Charger(CABLE_OUT);
+			g_host_charging_mode = 0;
+		} else {
+			printk("[usb_otg] %s\n", charger_event_to_str(usb_state));
+			g_charger_state = usb_state;
+			asus_set_Charger(usb_state);
+		}
+//ASUS_BSP--- Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
+#endif
+	} else if (!motg->host_mode) {
+//ASUS_BSP+++ Landice "[ZE500KL][USB][NA][spec] Separate SE1 from DCP from charger types"
+		if (AC_IN == usb_state && g_charger_state == SE1_IN) {
+			printk("[usb_otg] AC_IN after SE1_IN, skipped");
+			return;
+		}
+//ASUS_BSP--- Landice "[ZE500KL][USB][NA][spec] Separate SE1 from DCP from charger types"
+//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
+#if defined(CONFIG_SMB358_CHARGER)
+		printk("[usb_otg] %s(%s)\n", __func__, charger_event_to_str(usb_state));
+		g_charger_state = usb_state;
+		setSMB358Charger(usb_state);
+#if defined(CONFIG_ASUS_EVT_LOG)
+		switch(usb_state) {
 		case USB_IN:
 			evt_mode_string = "USB";
 			break;
@@ -264,513 +379,869 @@ int ASUSEvtlog_Power(int usb_state)
 		default:
 			evt_mode_string = NULL;
 		}
-		if (evt_mode_string != NULL){
+		if (evt_mode_string != NULL)
 			ASUSEvtlog("[USB] set_chg_mode: %s\n", evt_mode_string);
-                        return 0;
-                }else
-                        return -1;
-}
-EXPORT_SYMBOL(ASUSEvtlog_Power);
-//#endif
-
-static void asus_otg_set_charger(int usb_state)
-{
-       struct msm_otg *motg = the_msm_otg;
-       char *evt_mode_string;
-       evt_mode_string="";
-	   
-	   printk("[usb_otg] %s +++\n",__func__);
-       printk("[usb_otg] %s :motg->host_mode = %d\n",__func__,motg->host_mode);
-       printk("[usb_otg] %s :usb_state = %s\n",__func__,charger_event_to_str(usb_state));
-       printk("[usb_otg] %s :test_bit(B_SESS_VLD, &motg->inputs)=%d\n",__func__,test_bit(B_SESS_VLD, &motg->inputs));
-
-
-       if (usb_state == g_charger_state) {
-               /* Two CABLE_OUT events are often seen at the same time, due to a_sess_vld,b_sess_vld comes first and b_sess_end comes later
-                  Therefore, we block the same event set. We initialize g_charger_state to -1 so that first call won't be skipped */
-               printk("[usb_otg] skip asus_otg_set_charger(%s) (already set)\n", charger_event_to_str(usb_state));
-//ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
-/* ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
-#if defined(CONFIG_SMB358_CHARGER)
-       } else if (ENABLE_5V == usb_state) {
-               if (test_bit(B_SESS_VLD, &motg->inputs)) {
-                       printk("[usb_otg] External power source detected - skip ENABLE_5V\n");
-                       g_skipped_5v = 1;
-                       g_charger_state = UNKNOWN_IN;
-                       setSMB358Charger(UNKNOWN_IN);
-               } else {
-                       printk("[usb_otg] %s\n", charger_event_to_str(usb_state));
-                       g_charger_state = usb_state;
-                       setSMB358Charger(usb_state);
-               }
-       } else if (DISABLE_5V == usb_state) {
-               if (g_skipped_5v) {
-                       printk("[usb_otg] Send CABLE_OUT for host clear with external power\n");
-                       g_charger_state = CABLE_OUT;
-                       setSMB358Charger(CABLE_OUT);
-               } else {
-                       printk("[usb_otg] %s\n", charger_event_to_str(usb_state));
-                       g_charger_state = usb_state;
-                       setSMB358Charger(usb_state);
-               }
-/* ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
 #endif
-	} else if (!motg->host_mode) {
-//ASUS_BSP+++ Landice "[ZE500KL][USB][NA][spec] Separate SE1 from DCP from charger types"
-		if (AC_IN == usb_state && g_charger_state == SE1_IN) {
-			printk("[usb_otg] AC_IN after SE1_IN, skipped");
-			return;
-		}
-//ASUS_BSP--- Landice "[ZE500KL][USB][NA][spec] Separate SE1 from DCP from charger types"
-//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
-#if defined(CONFIG_SMB358_CHARGER)
+//ASUS_BSP+++ Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
+#elif defined(CONFIG_SMB1360_CHARGER_FG)
 		printk("[usb_otg] %s(%s)\n", __func__, charger_event_to_str(usb_state));
 		g_charger_state = usb_state;
-		setSMB358Charger(usb_state);
+		asus_set_Charger(usb_state);
+#if defined(CONFIG_ASUS_EVT_LOG)
+		switch(usb_state) {
+		case USB_IN:
+			evt_mode_string = "USB";
+			break;
+		case AC_IN:
+		case SE1_IN:
+			evt_mode_string = "ASUS AC";
+			break;
+		case UNKNOWN_IN:
+			evt_mode_string = "UNKNOWN";
+			break;
+		case CABLE_OUT:
+			evt_mode_string = "None";
+			break;
+		default:
+			evt_mode_string = NULL;
+		}
+		if (evt_mode_string != NULL)
+			ASUSEvtlog("[USB] set_chg_mode: %s\n", evt_mode_string);
 #endif
-                ASUSEvtlog_Power(usb_state);
-        }
-//BSP Ben for A68 carkit
-        printk("[usb_otg] %s ---\n",__func__);
-        return;
+//ASUS_BSP--- Show_Wang "[ZC550KL][USB][NA][Spec] Set asus charger upon charger type detection for external charger"
+#endif
+	}
 }
 //ASUS_BSP--- Landice "[ZE500KL][USBH] Enable/Disable VBUS output on ID events"
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Enable manual mode switching"
 static void asus_otg_host_mode_prepare(void) {
-       g_suspend_delay_work_run = 0;
-       g_keep_power_on = 0;
-       g_host_none_mode = 0;
-/* ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
-       g_skipped_5v=0;
-/* ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Support host charging for stress test" */
+	g_suspend_delay_work_run = 0;
+	g_keep_power_on = 0;
+	g_host_none_mode = 0;
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-       cancel_work_sync(&asus_chg_usb_work);
-       cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
+	cancel_work_sync(&asus_chg_usb_work);
+	cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 }
 
 static void asus_otg_mode_switch(enum usb_mode_type req_mode)
 {
 	struct msm_otg *motg = the_msm_otg;
-        if(motg->otg_mode == req_mode)
-        {
-		printk("[usb_otg] already in req_mode = %d, skipped\n",req_mode);
-                return;
-        }
-
-       switch (req_mode) {
-       case USB_NONE:
-               printk("[usb_otg] switch to none mode\n");
-               set_bit(ID, &motg->inputs);
-               clear_bit(B_SESS_VLD, &motg->inputs);
-               motg->host_mode = false;
-               break;
-       case USB_PERIPHERAL:
-               printk("[usb_otg] switch to peripheral mode\n");
-               set_bit(ID, &motg->inputs);
-               motg->host_mode = false;
+	if(motg->otg_mode == req_mode)
+		return;
+	switch (req_mode) {
+	case USB_NONE:
+		printk("[usb_otg] switch to none mode\n");
+		set_bit(ID, &motg->inputs);
+		clear_bit(B_SESS_VLD, &motg->inputs);
+		motg->host_mode = false;
+		break;
+	case USB_PERIPHERAL:
+		printk("[usb_otg] switch to peripheral mode\n");
+		set_bit(ID, &motg->inputs);
+		motg->host_mode = false;
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-               asus_otg_host_mode_cleanup();
+		asus_otg_host_mode_cleanup();
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-               break;
-       case USB_HOST:
-               printk("[usb_otg] switch to host mode\n");
-               clear_bit(ID, &motg->inputs);
-               motg->host_mode = true;
+		break;
+	case USB_HOST:
+		printk("[usb_otg] switch to host mode\n");
+		clear_bit(ID, &motg->inputs);
+		if(motg->host_mode) {
+			motg->otg_mode = req_mode;
+			return;
+		}
+		motg->host_mode = true;
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-               asus_otg_host_mode_prepare();
+		asus_otg_host_mode_prepare();
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-                if(motg->host_mode){
-                        motg->otg_mode = req_mode;
-                        return;
-                }
-                motg->host_mode = true;
 		break;
 	case USB_AUTO:
 // For padfone only
 #if 0
-               if (AX_MicroP_IsP01Connected() && pad_exist()) {
-                       printk("[usb_otg] switch to host mode (auto)\r\n");
-                       //ASUS_BSP+++ Eric5_Ou "init usb host parameters"
-                       asus_otg_host_mode_prepare();
-                       //ASUS_BSP--- Eric5_Ou "init usb host parameters"
-                       clear_bit(ID, &motg->inputs);
-                       g_host_mode = 1;
-               } else {
-                       printk("[usb_otg] switch to peripheral mode (auto)\r\n");
-                       set_bit(ID, &motg->inputs);
-                       g_host_mode = 0;
-               }
+		if (AX_MicroP_IsP01Connected() && pad_exist()) {
+			printk("[usb_otg] switch to host mode (auto)\r\n");
+			//ASUS_BSP+++ Eric5_Ou "init usb host parameters"
+			asus_otg_host_mode_prepare();
+			//ASUS_BSP--- Eric5_Ou "init usb host parameters"
+			clear_bit(ID, &motg->inputs);
+			g_host_mode = 1;
+		} else {
+			printk("[usb_otg] switch to peripheral mode (auto)\r\n");
+			set_bit(ID, &motg->inputs);
+			g_host_mode = 0;
+		}
 #endif
-               printk("[usb_otg] switch to auto mode, trigger ID detection\n");
-               //Change otg_mode first, so the id_status_work won't be skipped
-	       old_id_state = -1;
-               motg->otg_mode = req_mode;
-		//queue_delayed_work(system_nrt_wq, &motg->id_status_work, 0);
+		printk("[usb_otg] switch to auto mode, trigger ID detection\n");
+		//Change otg_mode first, so the id_status_work won't be skipped
+		old_id_state = -1;
+		motg->otg_mode = req_mode;
 		queue_delayed_work(motg->otg_wq, &motg->id_status_work, 0);
-              // break;
-	      return;
-       default:
-               printk("[usb_otg] unknown mode!!! (%d)\n", req_mode);
-               return;
-       }
-       motg->otg_mode = req_mode;
+		return;
+	default:
+		printk("[usb_otg] unknown mode!!! (%d)\n", req_mode);
+		return;
+	}
 
-       //ASUS_BSP+++ Eric5_Ou "Add pm_suspended judgement to avoid system crash"
-       if (atomic_read(&motg->pm_suspended))
-               motg->sm_work_pending = true;
-       else
-               queue_work(motg->otg_wq, &motg->sm_work);
-       //ASUS_BSP--- Eric5_Ou "Add pm_suspended judgement to avoid system crash"
+	motg->otg_mode = req_mode;
+
+	//ASUS_BSP+++ Eric5_Ou "Add pm_suspended judgement to avoid system crash"
+	if (atomic_read(&motg->pm_suspended))
+		motg->sm_work_pending = true;
+	else
+		queue_work(motg->otg_wq, &motg->sm_work);
+	//ASUS_BSP--- Eric5_Ou "Add pm_suspended judgement to avoid system crash"
 }
 
 static int asus_otg_mode_show(struct seq_file *s, void *unused)
 {
-       struct msm_otg *motg = s->private;
+	struct msm_otg *motg = s->private;
 
-       if (USB_AUTO == motg->otg_mode) {
-               if(!test_bit(ID, &motg->inputs)) {
-                       seq_printf(s, "host (auto)\n");
-               } else {
-                       seq_printf(s, "peripheral (auto)\n");
-               }
-       } else {
-               if(!test_bit(ID, &motg->inputs)) {
-                       seq_printf(s, "host\n");
-               } else {
-                       seq_printf(s, "peripheral\n");
-               }
-       }
+	if (USB_AUTO == motg->otg_mode) {
+		if(!test_bit(ID, &motg->inputs)) {
+			seq_printf(s, "host (auto)\n");
+		} else {
+			seq_printf(s, "peripheral (auto)\n");
+		}
+	} else {
+		if(!test_bit(ID, &motg->inputs)) {
+			seq_printf(s, "host\n");
+		} else {
+			seq_printf(s, "peripheral\n");
+		}
+	}
 
-       return 0;
+	return 0;
 }
 
 static int asus_otg_mode_procfs_open(struct inode *inode, struct file *file)
 {
-       return single_open(file, asus_otg_mode_show, PDE_DATA(inode));
+	return single_open(file, asus_otg_mode_show, PDE_DATA(inode));
 }
+
 static ssize_t asus_otg_mode_write(struct file *file, const char __user *ubuf,
-                               size_t count, loff_t *ppos)
+				size_t count, loff_t *ppos)
 {
-       char buf[16];
-       enum usb_mode_type req_mode;
+	char buf[16];
+	enum usb_mode_type req_mode;
 
-       memset(buf, 0x00, sizeof(buf));
+	memset(buf, 0x00, sizeof(buf));
 
-       if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
-               return -EFAULT;
-       }
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		return -EFAULT;
+	}
 
-       if (!strncmp(buf, "host", 4)) {
-               req_mode = USB_HOST;
-       } else if (!strncmp(buf, "peripheral", 10)) {
-               req_mode = USB_PERIPHERAL;
-       } else if (!strncmp(buf, "none", 4)) {
-               req_mode = USB_NONE;
-       } else if (!strncmp(buf, "auto", 4)) {
-               req_mode = USB_AUTO;
-       } else {
-               return -EFAULT;
-       }
+	if (!strncmp(buf, "host", 4)) {
+		req_mode = USB_HOST;
+	} else if (!strncmp(buf, "peripheral", 10)) {
+		req_mode = USB_PERIPHERAL;
+	} else if (!strncmp(buf, "none", 4)) {
+		req_mode = USB_NONE;
+	} else if (!strncmp(buf, "auto", 4)) {
+		req_mode = USB_AUTO;
+	} else {
+		return -EFAULT;
+	}
 
-       asus_otg_mode_switch(req_mode);
+	asus_otg_mode_switch(req_mode);
 
-       return count;
+	return count;
 }
+
 const struct file_operations asus_otg_mode_procfs_fops = {
-       .open = asus_otg_mode_procfs_open,
-       .read = seq_read,
-       .write = asus_otg_mode_write,
-       .llseek = seq_lseek,
-       .release = single_release,
+	.open = asus_otg_mode_procfs_open,
+	.read = seq_read,
+	.write = asus_otg_mode_write,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
+
+/* ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+static int asus_otg_proc_host_charging_mode_show(struct seq_file *s, void *unused)
+{
+	if (g_host_charging_mode == UNKNOWN_IN)
+		seq_printf(s, "unknown\n");
+	else if (g_host_charging_mode == AC_IN)
+		seq_printf(s, "ac\n");
+	else
+		seq_printf(s, "error\n");
+	return 0;
+}
+
+static int asus_otg_proc_host_charging_mode_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, asus_otg_proc_host_charging_mode_show, PDE_DATA(inode));
+}
+
+static ssize_t asus_otg_proc_host_charging_mode_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	char buf[10];
+	memset(buf, 0x00, sizeof(buf));
+
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		return -EFAULT;
+	}
+
+	if (!strncmp(buf, "ac", 2)) {
+		g_host_charging_mode = AC_IN;
+		printk("[usb_otg] Set host charging mode to AC_IN\n");
+	} else if (!strncmp(buf, "unknown", 7)) {
+		g_host_charging_mode = UNKNOWN_IN;
+		printk("[usb_otg] Set host charging mode to UNKNOWN_IN\n");
+	} else {
+		return -EINVAL;
+	}
+
+	return count;
+}
+
+const struct file_operations asus_otg_proc_host_charging_mode_fops = {
+	.open = asus_otg_proc_host_charging_mode_open,
+	.read = seq_read,
+	.write = asus_otg_proc_host_charging_mode_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+/* ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+
+//ASUS_BSP+++ ShowWang "send otg id event to framework"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+#include <linux/switch.h>
+//ASUS_BSP+++ ShowWang "send otg status event to framework"
+struct switch_dev asus_msm_otg_status;
+
+static ssize_t asus_msm_otg_status_switch_name(struct switch_dev *sdev, char *buf)
+{
+	return sprintf(buf, "otg_status\n");
+}
+
+static ssize_t asus_msm_otg_status_switch_state(struct switch_dev *sdev, char *buf)
+{
+	struct msm_otg *motg = the_msm_otg;
+	return sprintf(buf, "%d\n", !gpio_get_value(motg->pdata->tps2546_status_gpio) );
+}
+
+static int AsusOtgStatusNotifyInitialize(void)
+{
+	int ret = 0;
+	printk("[USB] %s: register otg status switch %d\n", __func__, ret);
+	asus_msm_otg_status.name = "otg_status";
+	asus_msm_otg_status.print_state = asus_msm_otg_status_switch_state;
+	asus_msm_otg_status.print_name = asus_msm_otg_status_switch_name;
+	ret = switch_dev_register(&asus_msm_otg_status);
+	if (ret < 0) {
+	    printk("[USB] %s: Unable to register otg status switch %d\n", __func__, ret);
+	    return -1;
+	}
+	return 0;
+}
+//ASUS_BSP--- ShowWang "send otg status event to framework"
+
+struct switch_dev asus_msm_otg_id;
+
+static ssize_t asus_msm_otg_id_switch_name(struct switch_dev *sdev, char *buf)
+{
+	return sprintf(buf, "otg_id\n");
+}
+
+static ssize_t asus_msm_otg_id_switch_state(struct switch_dev *sdev, char *buf)
+{
+	struct msm_otg *motg = the_msm_otg;
+	return sprintf(buf, "%d\n", !test_bit(ID, &motg->inputs) );
+}
+
+static int AsusOtgIdNotifyInitialize(void)
+{
+	int ret = 0;
+	printk("[USB] %s: register otg vbus switch %d\n", __func__, ret);
+	asus_msm_otg_id.name = "otg_id";
+	asus_msm_otg_id.print_state = asus_msm_otg_id_switch_state;
+	asus_msm_otg_id.print_name = asus_msm_otg_id_switch_name;
+	ret = switch_dev_register(&asus_msm_otg_id);
+	if (ret < 0) {
+	    printk("[USB] %s: Unable to register otg vbus switch %d\n", __func__, ret);
+	    return -1;
+	}
+	return 0;
+}
+#endif
+//ASUS_BSP--- ShowWang "send otg id event to framework"
+
+//ASUS_BSP+++ ShowWang "set otg current type as user switch"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+static bool asus_otg_support_reverse_charging(void) {
+		if ((HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) && !otg_current_sdp) {
+			return true;
+		} else {
+			return false;
+		}
+}
+void asus_otg_chargetype_set(bool sdp) {
+		struct msm_otg *motg = the_msm_otg;
+		if (HW_ID == ZC550KL_8939_ER) {
+			if(sdp) {
+				if (!gpio_get_value(motg->pdata->tps2546_ctl3_gpio)) {
+					gpio_set_value(motg->pdata->tps2546_ctl3_gpio, 1);
+					printk("[usb_otg] set ctl3 gpio status to sdp\n" );
+				}else{
+					printk("[usb_otg] ctl3 gpio status is already sdp\n" );
+				}
+			} else {
+				if(gpio_get_value(motg->pdata->tps2546_ctl3_gpio)) {
+					gpio_set_value(motg->pdata->tps2546_ctl3_gpio, 0);
+					printk("[usb_otg] set ctl3 gpio status to dcp\n" );
+				} else {
+					printk("[usb_otg] ctl3 gpio status is already dcp\n" );
+				}
+			}
+		} else if (HW_ID == ZC550KL_8939_PR) {
+			if(!sdp) {
+				if (!gpio_get_value(motg->pdata->tps2546_ctl3_gpio)) {
+					gpio_set_value(motg->pdata->tps2546_ctl3_gpio, 1);
+					printk("[usb_otg] set ctl3 gpio status to sdp\n" );
+				}else{
+					printk("[usb_otg] ctl3 gpio status is already sdp\n" );
+				}
+			} else {
+				if(gpio_get_value(motg->pdata->tps2546_ctl3_gpio)) {
+					gpio_set_value(motg->pdata->tps2546_ctl3_gpio, 0);
+					printk("[usb_otg] set ctl3 gpio status to dcp\n" );
+				} else {
+					printk("[usb_otg] ctl3 gpio status is already dcp\n" );
+				}
+			}
+			}
+}
+
+static int asus_otg_proc_otg_chargetype_show(struct seq_file *s, void *unused)
+{
+	struct msm_otg *motg = the_msm_otg;
+	if ( HW_ID == ZC550KL_8939_ER) {
+		if (gpio_get_value(motg->pdata->tps2546_ctl3_gpio))
+			seq_printf(s, "0\n");
+		else
+			seq_printf(s, "1\n");
+	} else if ( HW_ID == ZC550KL_8939_PR) {
+		if (gpio_get_value(motg->pdata->tps2546_ctl3_gpio))
+			seq_printf(s, "1\n");
+		else
+			seq_printf(s, "0\n");
+	}
+	return 0;
+}
+
+static int asus_otg_proc_otg_chargetype_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, asus_otg_proc_otg_chargetype_show, PDE_DATA(inode));
+}
+
+static ssize_t asus_otg_proc_otg_chargetype_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	char buf[10];
+	memset(buf, 0x00, sizeof(buf));
+
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		return -EFAULT;
+	}
+
+	if ( HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) {
+		if (!strncmp(buf, "1", 1)) {
+			if(otg_current_sdp) {
+				printk("[usb_otg] set otg current chargetype to DCP\n");
+				otg_current_sdp = 0;
+				if(g_CHG_mode == 2) {
+					asus_otg_chargetype_set(0);
+				}
+			} else {
+				printk("[usb_otg] otg current chargetype is already DCP\n");
+			}
+		} else {
+			if(!otg_current_sdp) {
+				printk("[usb_otg] set otg current chargetype to SDP\n");
+				otg_current_sdp = 1;
+				if(g_CHG_mode ==2 ) {
+					asus_otg_chargetype_set(1);
+				}
+			} else {
+				printk("[usb_otg] otg current chargetype is already SDP\n");
+			}
+		}
+	}
+	return count;
+}
+
+const struct file_operations asus_otg_proc_otg_chargetype_fops = {
+	.open = asus_otg_proc_otg_chargetype_open,
+	.read = seq_read,
+	.write = asus_otg_proc_otg_chargetype_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+#endif
+//ASUS_BSP--- ShowWang "set otg current type as user switch"
+
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+static int asus_otg_proc_otg_poweron_show(struct seq_file *s, void *unused)
+{
+	if (g_otg_poweron)
+		seq_printf(s, "1\n");
+	else
+		seq_printf(s, "0\n");
+	return 0;
+}
+
+static int asus_otg_proc_otg_poweron_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, asus_otg_proc_otg_poweron_show, PDE_DATA(inode));
+}
+
+static ssize_t asus_otg_proc_otg_poweron_write(struct file *file, const char __user *ubuf, size_t count, loff_t *ppos)
+{
+	char buf[10];
+	memset(buf, 0x00, sizeof(buf));
+
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		return -EFAULT;
+	}
+
+	if (!strncmp(buf, "1", 2)) {
+		g_otg_poweron = 1;
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+		if(g_apple_attach) {
+			g_keep_apple_power_on = 1;
+		} else {
+			g_keep_apple_power_on = 0;
+		}
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+		printk("[usb_otg] Set on otg poweron \n");
+	} else {
+		g_otg_poweron = 0;
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+		g_keep_apple_power_on = 0;
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+		printk("[usb_otg] Set off otg poweron \n");
+	}
+
+	return count;
+}
+
+const struct file_operations asus_otg_proc_otg_poweron_fops = {
+	.open = asus_otg_proc_otg_poweron_open,
+	.read = seq_read,
+	.write = asus_otg_proc_otg_poweron_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static void asus_otg_check_disable_5V_work(struct work_struct *w)
+{
+	if(g_vbus_is_on){
+		printk("[usb_otg] %s disable 5V\n", __func__);
+		asus_otg_set_charger(DISABLE_5V);
+		g_vbus_is_on = false;
+	}
+}
+
+//ASUS_BSP+++ Show_Wang "Add monitor to check otg suspend status in suspend mode"
+static void asus_otg_suspend_check(struct work_struct *work)
+{
+	struct msm_otg *motg = the_msm_otg;
+	struct usb_otg *otg = motg->phy.otg;
+
+	if ( g_keep_apple_power_on ) {
+		return;
+	}
+	dev_info(motg->phy.dev, "check otg suspend status (%d)\n", pm_runtime_suspended(otg->phy->dev));
+
+	if (!pm_runtime_suspended(otg->phy->dev)) {
+		wake_unlock(&motg->wlock);
+	}
+}
+
+static DECLARE_DELAYED_WORK(asus_otg_suspend_check_work, asus_otg_suspend_check);
+//ASUS_BSP--- Show_Wang "Add monitor to check otg suspend status in suspend mode"
+#endif
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
 
 static int asus_otg_procfs_init(struct msm_otg *motg)
 {
-       struct proc_dir_entry *proc_entry;
+	struct proc_dir_entry *proc_entry;
 
-       asus_otg_proc_root = proc_mkdir("msm_otg", NULL);
-       if (!asus_otg_proc_root) {
-               return -ENODEV;
-       }
+	asus_otg_proc_root = proc_mkdir("msm_otg", NULL);
+	if (!asus_otg_proc_root) {
+		return -ENODEV;
+	}
 
-       proc_entry = proc_create_data("mode", S_IRUGO |S_IWUSR, asus_otg_proc_root,
-                       &asus_otg_mode_procfs_fops, motg);
-       if (!proc_entry) {
-               remove_proc_entry("mode", asus_otg_proc_root);
-               asus_otg_proc_root = NULL;
-               return -ENODEV;
-       }
+/* ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+	proc_entry = proc_create_data("host_charging_mode", S_IRUGO | S_IWUSR, asus_otg_proc_root,
+			&asus_otg_proc_host_charging_mode_fops, motg);
+	if (!proc_entry) {
+		remove_proc_entry("host_charging_mode", asus_otg_proc_root);
+		asus_otg_proc_root = NULL;
+		return -ENODEV;
+	}
+/* ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
 
-       return 0;
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	proc_entry = proc_create_data("otg_poweron", S_IRUGO |S_IWUSR, asus_otg_proc_root,
+			&asus_otg_proc_otg_poweron_fops, motg);
+	if (!proc_entry) {
+		remove_proc_entry("otg_poweron", asus_otg_proc_root);
+		asus_otg_proc_root = NULL;
+		return -ENODEV;
+	}
+#endif
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+
+//ASUS_BSP+++ ShowWang "set otg current type as user switch"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	proc_entry = proc_create_data("otg_chargetype", S_IRUGO |S_IWUSR, asus_otg_proc_root,
+			&asus_otg_proc_otg_chargetype_fops, motg);
+	if (!proc_entry) {
+		remove_proc_entry("otg_chargetype", asus_otg_proc_root);
+		asus_otg_proc_root = NULL;
+		return -ENODEV;
+	}
+#endif
+//ASUS_BSP--- ShowWang "set otg current type as user switch"
+
+	proc_entry = proc_create_data("mode", S_IRUGO |S_IWUSR, asus_otg_proc_root,
+			&asus_otg_mode_procfs_fops, motg);
+	if (!proc_entry) {
+		remove_proc_entry("mode", asus_otg_proc_root);
+		asus_otg_proc_root = NULL;
+		return -ENODEV;
+	}
+
+	return 0;
 }
 
 static void asus_otg_procfs_cleanup(void)
 {
-       remove_proc_entry("mode", asus_otg_proc_root);
-       remove_proc_entry("msm_otg", NULL);
+/* ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+	remove_proc_entry("host_charging_mode", asus_otg_proc_root);
+/* ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Add proc file host_charging_mode (ac/unknown) in case the current is not enough for charging" */
+
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	remove_proc_entry("otg_poweron", asus_otg_proc_root);
+#endif
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+	remove_proc_entry("mode", asus_otg_proc_root);
+	remove_proc_entry("msm_otg", NULL);
 }
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Enable manual mode switching"
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Add back debugfs/msm_otg/mode for convenience of debugging"
 static int asus_otg_mode_debugfs_open(struct inode *inode, struct file *file)
 {
-       return single_open(file, asus_otg_mode_show, inode->i_private);
+	return single_open(file, asus_otg_mode_show, inode->i_private);
 }
 
 const struct file_operations asus_otg_mode_debugfs_fops = {
-       .open = asus_otg_mode_debugfs_open,
-       .read = seq_read,
-       .write = asus_otg_mode_write,
-       .llseek = seq_lseek,
-       .release = single_release,
+	.open = asus_otg_mode_debugfs_open,
+	.read = seq_read,
+	.write = asus_otg_mode_write,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Add back debugfs/msm_otg/mode for convenience of debugging"
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
 static int myxtoi(const char *name)
 {
-       int val = 0;
+	int val = 0;
 
-       for (;; name++) {
-               switch (*name) {
-               case '0' ... '9':
-                       val = 16*val+(*name-'0');
-                       break;
-               case 'A' ... 'F':
-                       val = 16*val+(*name-'A'+10);
-                       break;
-               case 'a' ... 'f':
-                       val = 16*val+(*name-'a'+10);
-                       break;
-               default:
-                       return val;
-               }
-       }
+	for (;; name++) {
+		switch (*name) {
+		case '0' ... '9':
+			val = 16*val+(*name-'0');
+			break;
+		case 'A' ... 'F':
+			val = 16*val+(*name-'A'+10);
+			break;
+		case 'a' ... 'f':
+			val = 16*val+(*name-'a'+10);
+			break;
+		default:
+			return val;
+		}
+	}
 }
+
+static int msm_otg_phy_parameter_a_show(struct seq_file *s, void *unused)
+{
+	seq_printf(s, "reg: 0x80, value: 0x%X\n", g_phy_parameter_a);
+	return 0;
+}
+
+static int msm_otg_phy_parameter_a_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, msm_otg_phy_parameter_a_show, inode->i_private);
+}
+
+static ssize_t msm_otg_phy_parameter_a_write(struct file *file, const char __user *ubuf,
+				size_t count, loff_t *ppos)
+{
+	char buf[16];
+	int status = count;
+
+	memset(buf, 0x00, sizeof(buf));
+
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		status = -EFAULT;
+		goto out;
+	}
+
+	g_phy_parameter_a = myxtoi(buf);
+	g_phy_parameter_reset = 1;
+
+out:
+	return status;
+}
+
+const struct file_operations msm_otg_phy_parameter_a_fops = {
+	.open = msm_otg_phy_parameter_a_open,
+	.read = seq_read,
+	.write = msm_otg_phy_parameter_a_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
 
 static int msm_otg_phy_parameter_b_show(struct seq_file *s, void *unused)
 {
-       seq_printf(s, "reg: 0x81, value: 0x%X\n", g_phy_parameter_b);
-       return 0;
+	seq_printf(s, "reg: 0x81, value: 0x%X\n", g_phy_parameter_b);
+	return 0;
 }
 
 static int msm_otg_phy_parameter_b_open(struct inode *inode, struct file *file)
 {
-       return single_open(file, msm_otg_phy_parameter_b_show, inode->i_private);
+	return single_open(file, msm_otg_phy_parameter_b_show, inode->i_private);
 }
+
 static ssize_t msm_otg_phy_parameter_b_write(struct file *file, const char __user *ubuf,
-                               size_t count, loff_t *ppos)
+				size_t count, loff_t *ppos)
 {
-       char buf[16];
-       int status = count;
+	char buf[16];
+	int status = count;
 
-       memset(buf, 0x00, sizeof(buf));
+	memset(buf, 0x00, sizeof(buf));
 
-       if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
-               status = -EFAULT;
-               goto out;
-       }
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		status = -EFAULT;
+		goto out;
+	}
 
-       g_phy_parameter_b = myxtoi(buf);
+	g_phy_parameter_b = myxtoi(buf);
+	g_phy_parameter_reset = 1;
 
 out:
-       return status;
+	return status;
 }
 
 const struct file_operations msm_otg_phy_parameter_b_fops = {
-       .open = msm_otg_phy_parameter_b_open,
-       .read = seq_read,
-       .write = msm_otg_phy_parameter_b_write,
-       .llseek = seq_lseek,
-       .release = single_release,
+	.open = msm_otg_phy_parameter_b_open,
+	.read = seq_read,
+	.write = msm_otg_phy_parameter_b_write,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
 
 static int msm_otg_phy_parameter_c_show(struct seq_file *s, void *unused)
 {
-       seq_printf(s, "reg: 0x82, value: 0x%X\n", g_phy_parameter_c);
-       return 0;
+	seq_printf(s, "reg: 0x82, value: 0x%X\n", g_phy_parameter_c);
+	return 0;
 }
+
 static int msm_otg_phy_parameter_c_open(struct inode *inode, struct file *file)
 {
-       return single_open(file, msm_otg_phy_parameter_c_show, inode->i_private);
+	return single_open(file, msm_otg_phy_parameter_c_show, inode->i_private);
 }
 
 static ssize_t msm_otg_phy_parameter_c_write(struct file *file, const char __user *ubuf,
-                               size_t count, loff_t *ppos)
+				size_t count, loff_t *ppos)
 {
-       char buf[16];
-       int status = count;
+	char buf[16];
+	int status = count;
 
-       memset(buf, 0x00, sizeof(buf));
+	memset(buf, 0x00, sizeof(buf));
 
-       if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
-               status = -EFAULT;
-               goto out;
-       }
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		status = -EFAULT;
+		goto out;
+	}
 
-       g_phy_parameter_c = myxtoi(buf);
+	g_phy_parameter_c = myxtoi(buf);
+	g_phy_parameter_reset = 1;
 
 out:
-       return status;
+	return status;
 }
 
 const struct file_operations msm_otg_phy_parameter_c_fops = {
-       .open = msm_otg_phy_parameter_c_open,
-       .read = seq_read,
-       .write = msm_otg_phy_parameter_c_write,
-       .llseek = seq_lseek,
-       .release = single_release,
+	.open = msm_otg_phy_parameter_c_open,
+	.read = seq_read,
+	.write = msm_otg_phy_parameter_c_write,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
+
 static int msm_otg_phy_parameter_d_show(struct seq_file *s, void *unused)
 {
-       seq_printf(s, "reg: 0x83, value: 0x%X\n", g_phy_parameter_d);
-       return 0;
+	seq_printf(s, "reg: 0x83, value: 0x%X\n", g_phy_parameter_d);
+	return 0;
 }
 
 static int msm_otg_phy_parameter_d_open(struct inode *inode, struct file *file)
 {
-       return single_open(file, msm_otg_phy_parameter_d_show, inode->i_private);
+	return single_open(file, msm_otg_phy_parameter_d_show, inode->i_private);
 }
 
 static ssize_t msm_otg_phy_parameter_d_write(struct file *file, const char __user *ubuf,
-                               size_t count, loff_t *ppos)
+				size_t count, loff_t *ppos)
 {
-       char buf[16];
-       int status = count;
+	char buf[16];
+	int status = count;
 
-       memset(buf, 0x00, sizeof(buf));
+	memset(buf, 0x00, sizeof(buf));
 
-       if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
-               status = -EFAULT;
-               goto out;
-       }
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count))) {
+		status = -EFAULT;
+		goto out;
+	}
 
-       g_phy_parameter_d = myxtoi(buf);
+	g_phy_parameter_d = myxtoi(buf);
+	g_phy_parameter_reset = 1;
 
 out:
-       return status;
+	return status;
 }
+
 const struct file_operations msm_otg_phy_parameter_d_fops = {
-       .open = msm_otg_phy_parameter_d_open,
-       .read = seq_read,
-       .write = msm_otg_phy_parameter_d_write,
-       .llseek = seq_lseek,
-       .release = single_release,
+	.open = msm_otg_phy_parameter_d_open,
+	.read = seq_read,
+	.write = msm_otg_phy_parameter_d_write,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
 static int asus_otg_5v_output_show(struct seq_file *s, void *unused)
 {
-       seq_printf(s, "%s\n", g_vbus_is_on ? "enable":"disable");
-       return 0;
+	seq_printf(s, "%s\n", g_vbus_is_on ? "enable":"disable");
+	return 0;
 }
 
 static int asus_otg_5v_output_open(struct inode *inode, struct file *file)
 {
-       return single_open(file, asus_otg_5v_output_show, inode->i_private);
+	return single_open(file, asus_otg_5v_output_show, inode->i_private);
 }
 
 static ssize_t asus_otg_5v_output_write(struct file *file, const char __user *ubuf,
-                               size_t count, loff_t *ppos)
+				size_t count, loff_t *ppos)
 {
-       char buf[16];
-       struct seq_file *s = file->private_data;
-       struct msm_otg *motg = s->private;
+	char buf[16];
+	struct seq_file *s = file->private_data;
+	struct msm_otg *motg = s->private;
 
-       memset(buf, 0x00, sizeof(buf));
-       if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
-               return -EFAULT;
+	memset(buf, 0x00, sizeof(buf));
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
+		return -EFAULT;
 
-       if (!strncmp(buf, "enable", 6))
-               msm_hsusb_vbus_power(motg, true);
-       else if (!strncmp(buf, "disable", 7))
-               msm_hsusb_vbus_power(motg, false);
-       else
-               return -EINVAL;
+	if (!strncmp(buf, "enable", 6))
+		msm_hsusb_vbus_power(motg, true);
+	else if (!strncmp(buf, "disable", 7))
+		msm_hsusb_vbus_power(motg, false);
+	else
+		return -EINVAL;
 
-       return count;
+	return count;
 }
 
+static int id_debounce_show(struct seq_file *s, void *unused)
+{
+	seq_printf(s, "id debounce time =%dms\n", fix_delay);
+	return 0;
+}
+
+static int id_debounce_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, id_debounce_show, inode->i_private);
+}
+
+static ssize_t id_debounce_write(struct file *file, const char __user *ubuf,
+				size_t count, loff_t *ppos)
+{
+	char buf[16];
+
+	memset(buf, 0x00, sizeof(buf));
+	if (copy_from_user(&buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
+		return -EFAULT;
+
+	fix_delay = simple_strtoul(buf,NULL,10);
+
+	return count;
+}
+
+const struct file_operations id_debounce_fops = {
+	.open = id_debounce_open,
+	.read = seq_read,
+	.write = id_debounce_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 const struct file_operations asus_otg_5v_output_fops = {
-       .open = asus_otg_5v_output_open,
-       .read = seq_read,
-       .write = asus_otg_5v_output_write,
-       .llseek = seq_lseek,
-       .release = single_release,
+	.open = asus_otg_5v_output_open,
+	.read = seq_read,
+	.write = asus_otg_5v_output_write,
+	.llseek = seq_lseek,
+	.release = single_release,
 };
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
 static void asus_otg_chg_usb_work(struct work_struct *w)
 {
-       cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
-       asus_otg_set_charger(USB_IN);
+	struct msm_otg *motg = the_msm_otg;
+	if(test_bit(B_SESS_VLD, &motg->inputs)){
+		cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
+		asus_otg_set_charger(USB_IN);
+	}
 }
 
 static void asus_otg_chg_unknown_delay_work(struct work_struct *w)
 {
 	struct msm_otg *motg = the_msm_otg;
 	if(test_bit(B_SESS_VLD, &motg->inputs)){;
-		printk("[USB] %s: set charger(UNKNOWN_IN)\n", __func__);
 		asus_otg_set_charger(UNKNOWN_IN);
 	} else {
 		printk("[USB] %s: B_SESS_VLD is not set, need re-check\n", __func__);
-		//queue_work(system_nrt_wq, &motg->sm_work);
 		queue_work(motg->otg_wq, &motg->sm_work);
 	}
 }
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 void asus_otg_host_mode_cleanup(void)
 {
-       cancel_work_sync(&late_resume_work);
-       cancel_delayed_work_sync(&early_suspend_delay_work);
-}
-
-static bool asus_otg_keep_power_on_check(void)
-{
-       struct msm_otg *motg = the_msm_otg;
-       struct usb_phy *phy = &motg->phy;
-       struct file *flp = NULL;
-       mm_segment_t oldfs;
-       int index = 0, num = 0, ret = 0;
-       char diskpath[32];
-
-       oldfs = get_fs();
-       set_fs(get_ds());
-
-       num = sizeof(usb_device_list)/sizeof(usb_device_list[0]);
-
-       for(index = 0; index < num; index++) {
-               flp = filp_open(usb_device_list[index], O_RDONLY, S_IRWXU);
-               if(IS_ERR(flp))
-                       continue;
-               else {
-                       ret = 1;
-                       filp_close(flp, NULL);
-                       dev_info(phy->dev, "%s exist\n", usb_device_list[index]);
-                       break;
-               }
-       }
-       for(index = 0; index < 8; index++) {
-               snprintf(diskpath, sizeof(diskpath), "/dev/block/vold/disk:8,%d", index);
-               if(sys_access(diskpath, 0))
-                       continue;
-               else {
-                       ret = 1;
-                       dev_info(phy->dev, "%s exist\n", diskpath);
-                       break;
-               }
-       }
-       set_fs(oldfs);
-       return ret;
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	g_keep_apple_power_on = 0;
+	g_apple_attach = 0;
+#endif
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+	cancel_work_sync(&late_resume_work);
+	cancel_delayed_work_sync(&early_suspend_delay_work);
 }
 
 static void asus_otg_host_auto_switch(enum host_auto_sw req_mode)
 {
-       struct msm_otg *motg = the_msm_otg;
+	struct msm_otg *motg = the_msm_otg;
 
 	switch (req_mode) {
 	case HOST_AUTO_NONE:
@@ -793,133 +1264,214 @@ static void asus_otg_host_auto_switch(enum host_auto_sw req_mode)
 	if (atomic_read(&motg->pm_suspended))
 		motg->sm_work_pending = true;
 	else
-		//queue_work(system_nrt_wq, &motg->sm_work);
 		queue_work(motg->otg_wq, &motg->sm_work);
 	//ASUS_BSP--- Eric5_Ou "Add pm_suspended judgement to avoid system crash"
 }
+
 void asus_otg_host_power_off(void)
 {
-       struct msm_otg *motg = the_msm_otg;
-       struct usb_phy *phy = &motg->phy;
+	struct msm_otg *motg = the_msm_otg;
+	struct usb_phy *phy = &motg->phy;
 
-       if (motg->host_mode) {
-               dev_info(phy->dev, "%s()+++ (%d)(%d)\n", __func__, g_keep_power_on, g_host_none_mode);
-               if (!g_host_none_mode) {
-                       g_suspend_delay_work_run = 1;
-                       asus_otg_host_auto_switch(HOST_AUTO_NONE);
-                       asus_otg_set_charger(DISABLE_5V);
-               }
-               dev_info(phy->dev, "%s()---\n", __func__);
-       }
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	if (motg->host_mode && !g_keep_apple_power_on) {
+		dev_info(phy->dev, "%s()+++ (%d)(%d)\n", __func__, g_keep_power_on, g_host_none_mode);
+		if (!g_host_none_mode) {
+			g_suspend_delay_work_run = 1;
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+			if ( gpio_get_value(NEW_PCB) && g_support_device ) {
+				set_otg_battery_current_limit(550);
+				g_support_device = 0;
+			}
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+			if(!g_otg_poweron) {
+				asus_otg_set_charger(DISABLE_5V);
+			}
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+			if(asus_otg_support_reverse_charging()) {
+				if (g_CHG_mode != 2) {
+					asus_otg_chargetype_set(0);
+				}
+				wake_lock(&motg->wlock);
+			} else {
+				asus_otg_host_auto_switch(HOST_AUTO_NONE);
+			}
+#else
+			asus_otg_host_auto_switch(HOST_AUTO_NONE);
+#endif
+		}
+		dev_info(phy->dev, "%s()---\n", __func__);
+	}
+#else
+	if (motg->host_mode ) {
+		dev_info(phy->dev, "%s()+++ (%d)(%d)\n", __func__, g_keep_power_on, g_host_none_mode);
+		if (!g_host_none_mode) {
+			g_suspend_delay_work_run = 1;
+			asus_otg_host_auto_switch(HOST_AUTO_NONE);
+			asus_otg_set_charger(DISABLE_5V);
+		}
+		dev_info(phy->dev, "%s()---\n", __func__);
+	}
+#endif
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
 }
 
 static void asus_otg_early_suspend_delay_work(struct work_struct *w)
 {
-       struct msm_otg *motg = the_msm_otg;
-       struct usb_phy *phy = &motg->phy;
+	struct msm_otg *motg = the_msm_otg;
+	struct usb_phy *phy = &motg->phy;
 
-       dev_info(phy->dev, "%s()+++\n", __func__);
+	dev_info(phy->dev, "%s()+++\n", __func__);
 
-       if (motg->host_mode) {
-               g_keep_power_on = asus_otg_keep_power_on_check();
-               dev_info(phy->dev, "g_keep_power_on (%d)\n", g_keep_power_on);
-               if (!g_keep_power_on) {
-                       g_suspend_delay_work_run = 1;
-                       asus_otg_host_auto_switch(HOST_AUTO_NONE);
-                       asus_otg_set_charger(DISABLE_5V);
-               }
-       }
-
-       dev_info(phy->dev, "%s()---\n", __func__);
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	if (motg->host_mode && !g_keep_apple_power_on) {
+		dev_info(phy->dev, "g_keep_power_on (%d)\n", g_keep_power_on);
+		if (!g_keep_power_on) {
+			g_suspend_delay_work_run = 1;
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+			if ( gpio_get_value(NEW_PCB) && g_support_device ) {
+				set_otg_battery_current_limit(550);
+				g_support_device = 0;
+			}
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+			if(!g_otg_poweron) {
+				asus_otg_set_charger(DISABLE_5V);
+			}
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+			if(asus_otg_support_reverse_charging()) {
+				if (g_CHG_mode != 2) {
+					asus_otg_chargetype_set(0);
+				}
+				wake_lock(&motg->wlock);
+			} else {
+				asus_otg_host_auto_switch(HOST_AUTO_NONE);
+			}
+#else
+			asus_otg_host_auto_switch(HOST_AUTO_NONE);
+#endif
+		}
+	}
+#else
+	if (motg->host_mode) {
+		dev_info(phy->dev, "g_keep_power_on (%d)\n", g_keep_power_on);
+		if (!g_keep_power_on) {
+			g_suspend_delay_work_run = 1;
+			asus_otg_host_auto_switch(HOST_AUTO_NONE);
+			asus_otg_set_charger(DISABLE_5V);
+		}
+	}
+#endif
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+	dev_info(phy->dev, "%s()---\n", __func__);
 }
+
 static void asus_otg_late_resume_work(struct work_struct *w)
 {
-       int wait = 0;
-       struct msm_otg *motg = the_msm_otg;
-       struct usb_otg *otg = motg->phy.otg;
+	int wait = 0;
+	struct msm_otg *motg = the_msm_otg;
+	struct usb_otg *otg = motg->phy.otg;
 
-       dev_info(motg->phy.dev, "%s()+++\n", __func__);
-       while ((otg->phy->state != OTG_STATE_B_IDLE) && (wait++ < 10)) {
-               msleep(100);
-       }
+	dev_info(motg->phy.dev, "%s()+++\n", __func__);
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	if ((HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) && g_CHG_mode !=2) {
+		asus_otg_chargetype_set(1);
+	}
+#endif
+	while ((otg->phy->state != OTG_STATE_B_IDLE) && (wait++ < 10)) {
+		msleep(100);
+	}
 
-       if (wait >= 10) {
-               dev_err(motg->phy.dev, "not b_idle state, skip host auto switch (%d)\n", otg->phy->state);
-               return;
-       }
-       asus_otg_host_auto_switch(HOST_AUTO_HOST);
-       dev_info(motg->phy.dev, "%s()--- (%d)\n", __func__, wait);
+	if (wait >= 10) {
+		dev_err(motg->phy.dev, "not b_idle state, skip host auto switch (%d)\n", otg->phy->state);
+		return;
+	}
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+			if(!asus_otg_support_reverse_charging()){
+				asus_otg_host_auto_switch(HOST_AUTO_HOST);
+			}
+#else
+	asus_otg_host_auto_switch(HOST_AUTO_HOST);
+#endif
+	dev_info(motg->phy.dev, "%s()--- (%d)\n", __func__, wait);
 }
 
 #if defined(CONFIG_FB)
 static void asus_otg_fb_early_suspend(void)
 {
-       struct msm_otg *motg = the_msm_otg;
+	struct msm_otg *motg = the_msm_otg;
 
-       printk("%s()+++, %s\n", __func__, motg->host_mode ? "true":"false");
+	printk("%s()+++, %s\n", __func__, motg->host_mode ? "true":"false");
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
-       g_screen_off = true;
+	g_screen_off = true;
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
 
-       if (motg->host_mode) {
-               wake_lock_timeout(&early_suspend_wlock, 5 * HZ);
-               cancel_work_sync(&late_resume_work);
-               cancel_delayed_work_sync(&early_suspend_delay_work);
-               queue_delayed_work_on(0, early_suspend_delay_wq, &early_suspend_delay_work, 4 * HZ);
-       }
-       printk("%s()---\n", __func__);
+	if (motg->host_mode) {
+		wake_lock_timeout(&early_suspend_wlock, 5 * HZ);
+		cancel_work_sync(&late_resume_work);
+		cancel_delayed_work_sync(&early_suspend_delay_work);
+		queue_delayed_work_on(0, early_suspend_delay_wq, &early_suspend_delay_work, 4 * HZ);
+	}
+
+	printk("%s()---\n", __func__);
 }
 
 static void asus_otg_fb_late_resume(void)
 {
-       struct msm_otg *motg = the_msm_otg;
+	struct msm_otg *motg = the_msm_otg;
 
-       printk("%s()+++, host_mode=%s, suspend_run=%d\n", __func__, motg->host_mode ? "true":"false", g_suspend_delay_work_run);
+	printk("%s()+++, host_mode=%s, suspend_run=%d\n", __func__, motg->host_mode ? "true":"false", g_suspend_delay_work_run);
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
-       g_screen_off = false;
+	g_screen_off = false;
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
 
 	cancel_delayed_work_sync(&early_suspend_delay_work);
 	if (motg->host_mode && g_suspend_delay_work_run) {
-		//queue_work(system_nrt_wq, &late_resume_work);
-		queue_work(motg->otg_wq, &late_resume_work);
+		queue_work(system_nrt_wq, &late_resume_work);
 		g_suspend_delay_work_run = 0;
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
-	} else if ( !motg->host_mode && !gpio_get_value(motg->pdata->usb_id_gpio)) {
-		//queue_delayed_work(system_nrt_wq, &motg->id_status_work, 0);
+	} else if (!motg->host_mode && g_screenoff_id_ground) {
 		queue_delayed_work(motg->otg_wq, &motg->id_status_work, 0);
 	}
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
 
-       printk("%s()---\n", __func__);
+	printk("%s()---\n", __func__);
 }
 
 static int asus_otg_fb_notifier_callback(struct notifier_block *self, unsigned long event, void *data)
 {
-       struct fb_event *evdata = data;
-       static int blank_old = 0;
-       int *blank;
+	struct fb_event *evdata = data;
+	static int blank_old = 0;
+	int *blank;
 
-       if (evdata && evdata->data && event == FB_EVENT_BLANK) {
-               blank = evdata->data;
-               if (*blank == FB_BLANK_UNBLANK) {
-                       if (blank_old == FB_BLANK_POWERDOWN) {
-                               blank_old = FB_BLANK_UNBLANK;
-                               asus_otg_fb_late_resume();
-                       }
-               } else if (*blank == FB_BLANK_POWERDOWN) {
-                       if (blank_old == 0 || blank_old == FB_BLANK_UNBLANK) {
-                               blank_old = FB_BLANK_POWERDOWN;
-                               asus_otg_fb_early_suspend();
-                       }
-               }
-       }
+	if (evdata && evdata->data && event == FB_EVENT_BLANK) {
+		blank = evdata->data;
+		if (*blank == FB_BLANK_UNBLANK) {
+			if (blank_old == FB_BLANK_POWERDOWN) {
+				blank_old = FB_BLANK_UNBLANK;
+				asus_otg_fb_late_resume();
+			}
+		} else if (*blank == FB_BLANK_POWERDOWN) {
+			if (blank_old == 0 || blank_old == FB_BLANK_UNBLANK) {
+				blank_old = FB_BLANK_POWERDOWN;
+				asus_otg_fb_early_suspend();
+			}
+		}
+	}
 
-       return 0;
+	return 0;
 }
 #endif
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-
 
 
 static void
@@ -1002,7 +1554,7 @@ static int msm_hsusb_config_vddcx(int high)
 		return ret;
 	}
 
-	printk("%s: min_vol:%d max_vol:%d\n", __func__, min_vol, max_vol);
+	pr_debug("%s: min_vol:%d max_vol:%d\n", __func__, min_vol, max_vol);
 	msm_otg_dbg_log_event(&motg->phy, "CONFIG VDDCX", min_vol, max_vol);
 
 	return ret;
@@ -1134,7 +1686,7 @@ static int msm_hsusb_ldo_enable(struct msm_otg *motg,
 		return -ENOTSUPP;
 	}
 
-	printk("%s: USB reg mode (%d) (OFF/HPM/LPM)\n", __func__, mode);
+	pr_debug("%s: USB reg mode (%d) (OFF/HPM/LPM)\n", __func__, mode);
 	msm_otg_dbg_log_event(&motg->phy, "USB REG MODE", mode, ret);
 	return ret < 0 ? ret : 0;
 }
@@ -1225,11 +1777,11 @@ static void ulpi_init(struct msm_otg *motg)
 	int *seq = NULL;
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
 	int value = 0;
-	printk("[usb_otg] ulpi_init b=0x%x, c=0x%x, d=0x%x\n", g_phy_parameter_b, g_phy_parameter_c, g_phy_parameter_d);
+	printk("[usb_otg] ulpi_init a=0x%x, b=0x%x, c=0x%x, d=0x%x\n", g_phy_parameter_a, g_phy_parameter_b, g_phy_parameter_c, g_phy_parameter_d);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
 
 	if (override_phy_init) {
-		printk("%s(): HUSB PHY Init:%s\n", __func__,
+		pr_debug("%s(): HUSB PHY Init:%s\n", __func__,
 				override_phy_init);
 		get_options(override_phy_init, ARRAY_SIZE(aseq), aseq);
 		seq = &aseq[1];
@@ -1239,25 +1791,19 @@ static void ulpi_init(struct msm_otg *motg)
 
 	if (!seq)
 		return;
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
 	while (seq[0] >= 0) {
-/*		if (override_phy_init)
-			pr_debug("ulpi: write 0x%02x to 0x%02x\n",
-					seq[0], seq[1]);
-
-		dev_vdbg(motg->phy.dev, "ulpi: write 0x%02x to 0x%02x\n",
-				seq[0], seq[1]);
-		msm_otg_dbg_log_event(&motg->phy, "ULPI WRITE", seq[0], seq[1]);
-		ulpi_write(&motg->phy, seq[0], seq[1]);
-*/
-               switch (seq[1]) {
-               case 0x81:      value = (g_phy_parameter_b > 0) ? g_phy_parameter_b : seq[0];   break;
-               case 0x82:      value = (g_phy_parameter_c > 0) ? g_phy_parameter_c : seq[0];   break;
-               case 0x83:      value = (g_phy_parameter_d > 0) ? g_phy_parameter_d : seq[0];   break;
-               default:        value = seq[0];
-               }
-               printk("[usb_otg] ulpi: write 0x%02x to 0x%02x\n", value, seq[1]);
-               ulpi_write(&motg->phy, value, seq[1]);
+		switch (seq[1]) {
+		case 0x80:	value = (g_phy_parameter_a > 0) ? g_phy_parameter_a : seq[0];	break;
+		case 0x81:	value = (g_phy_parameter_b > 0) ? g_phy_parameter_b : seq[0];	break;
+		case 0x82:	value = (g_phy_parameter_c > 0) ? g_phy_parameter_c : seq[0];	break;
+		case 0x83:	value = (g_phy_parameter_d > 0) ? g_phy_parameter_d : seq[0];	break;
+		default:	value = seq[0];
+		}
+		msm_otg_dbg_log_event(&motg->phy, "ULPI WRITE", value, seq[1]);
+		printk("[usb_otg] ulpi: write 0x%02x to 0x%02x\n", value, seq[1]);
+		ulpi_write(&motg->phy, value, seq[1]);
 		seq += 2;
 	}
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
@@ -1543,9 +2089,9 @@ static int msm_otg_reset(struct usb_phy *phy)
 			ULPI_SET(ULPI_PWR_CLK_MNG_REG));
 		/* Enable PMIC pull-up */
 		pm8xxx_usb_id_pullup(1);
-/*		if (motg->phy_irq)
+		if (motg->phy_irq)
 			writeb_relaxed(USB_PHY_ID_MASK,
-				USB2_PHY_USB_PHY_INTERRUPT_MASK1);*/
+				USB2_PHY_USB_PHY_INTERRUPT_MASK1);
 	}
 
 	if (motg->caps & ALLOW_VDD_MIN_WITH_RETENTION_DISABLED)
@@ -1601,7 +2147,7 @@ static enum hrtimer_restart msm_otg_timer_func(struct hrtimer *hrtimer)
 		set_bit(motg->active_tmout, &motg->tmouts);
 	}
 
-	printk("expired %s timer\n", timer_string(motg->active_tmout));
+	pr_debug("expired %s timer\n", timer_string(motg->active_tmout));
 	queue_work(motg->otg_wq, &motg->sm_work);
 	return HRTIMER_NORESTART;
 }
@@ -1610,7 +2156,7 @@ static void msm_otg_del_timer(struct msm_otg *motg)
 {
 	int bit = motg->active_tmout;
 
-	printk("deleting %s timer. remaining %lld msec\n", timer_string(bit),
+	pr_debug("deleting %s timer. remaining %lld msec\n", timer_string(bit),
 			div_s64(ktime_to_us(hrtimer_get_remaining(
 					&motg->timer)), 1000));
 	hrtimer_cancel(&motg->timer);
@@ -1621,7 +2167,7 @@ static void msm_otg_start_timer(struct msm_otg *motg, int time, int bit)
 {
 	clear_bit(bit, &motg->tmouts);
 	motg->active_tmout = bit;
-	printk("starting %s timer\n", timer_string(bit));
+	pr_debug("starting %s timer\n", timer_string(bit));
 	hrtimer_start(&motg->timer,
 			ktime_set(time / 1000, (time % 1000) * 1000000),
 			HRTIMER_MODE_REL);
@@ -1643,7 +2189,7 @@ static int msm_otg_start_hnp(struct usb_otg *otg)
 		return -EINVAL;
 	}
 
-	printk("A-Host: HNP initiated\n");
+	pr_debug("A-Host: HNP initiated\n");
 	msm_otg_dbg_log_event(&motg->phy, "A_HOST: HNP INITIATED",
 			motg->inputs, otg->phy->state);
 	clear_bit(A_BUS_REQ, &motg->inputs);
@@ -1665,13 +2211,13 @@ static int msm_otg_start_srp(struct usb_otg *otg)
 	}
 
 	if ((jiffies - motg->b_last_se0_sess) < msecs_to_jiffies(TB_SRP_INIT)) {
-		printk("initial conditions of SRP are not met. Try again"
+		pr_debug("initial conditions of SRP are not met. Try again"
 				"after some time\n");
 		ret = -EAGAIN;
 		goto out;
 	}
 
-	printk("B-Device SRP started\n");
+	pr_debug("B-Device SRP started\n");
 	msm_otg_dbg_log_event(&motg->phy, "B_DEVICE: SRP STARTED",
 			motg->inputs, otg->phy->state);
 
@@ -1720,7 +2266,7 @@ static int msm_otg_set_suspend(struct usb_phy *phy, int suspend)
 	if (aca_enabled())
 		return 0;
 
-	printk("%s(%d) in %s state\n", __func__, suspend,
+	pr_debug("%s(%d) in %s state\n", __func__, suspend,
 				usb_otg_state_string(phy->state));
 	msm_otg_dbg_log_event(phy, "SET SUSPEND", suspend, phy->state);
 
@@ -1737,7 +2283,7 @@ static int msm_otg_set_suspend(struct usb_phy *phy, int suspend)
 				break;
 			/* fall through */
 		case OTG_STATE_A_HOST:
-			printk("host bus suspend\n");
+			pr_debug("host bus suspend\n");
 			msm_otg_dbg_log_event(phy, "HOST BUS SUSPEND",
 					motg->inputs, phy->state);
 			clear_bit(A_BUS_REQ, &motg->inputs);
@@ -1756,7 +2302,7 @@ static int msm_otg_set_suspend(struct usb_phy *phy, int suspend)
 			}
 			break;
 		case OTG_STATE_B_PERIPHERAL:
-			printk("peripheral bus suspend\n");
+			pr_debug("peripheral bus suspend\n");
 			msm_otg_dbg_log_event(phy, "PERIPHERAL BUS SUSPEND",
 					motg->inputs, phy->state);
 			if (!(motg->caps & ALLOW_LPM_ON_DEV_SUSPEND))
@@ -1776,6 +2322,7 @@ static int msm_otg_set_suspend(struct usb_phy *phy, int suspend)
 		case OTG_STATE_A_WAIT_BCON:
 			/* Remote wakeup or resume */
 			set_bit(A_BUS_REQ, &motg->inputs);
+			mdelay(500); //ASUS_BSP: Show_Wang "DUT will not recognized the USB Devices when DUT reboot with OTG+hub or Mouse"
 			/* ensure hardware is not in low power mode */
 			if (atomic_read(&motg->in_lpm))
 				pm_runtime_resume(phy->dev);
@@ -1790,7 +2337,7 @@ static int msm_otg_set_suspend(struct usb_phy *phy, int suspend)
 				pm_runtime_resume(phy->dev);
 			break;
 		case OTG_STATE_B_PERIPHERAL:
-			printk("peripheral bus resume\n");
+			pr_debug("peripheral bus resume\n");
 			msm_otg_dbg_log_event(phy, "PERIPHERAL BUS RESUME",
 					motg->inputs, phy->state);
 			if (!(motg->caps & ALLOW_LPM_ON_DEV_SUSPEND))
@@ -1836,7 +2383,7 @@ static int msm_otg_bus_freq_get(struct device *dev, struct msm_otg *motg)
 				ret);
 			return ret;
 		}
-		printk("%s set at %lu Hz\n", bus_clkname[i],
+		pr_debug("%s set at %lu Hz\n", bus_clkname[i],
 			clk_get_rate(motg->bus_clks[i]));
 		msm_otg_dbg_log_event(&motg->phy, "OTG BUS FREQ SET",
 				i, bus_freqs[i]);
@@ -1910,9 +2457,8 @@ static void msm_otg_enable_phy_hv_int(struct msm_otg *motg)
 	bool dp_dm_hv_int = false;
 	u32 val;
 
-	if (motg->pdata->otg_control == OTG_PHY_CONTROL)
-/*	if (motg->pdata->otg_control == OTG_PHY_CONTROL ||
-				motg->phy_irq)*/
+	if (motg->pdata->otg_control == OTG_PHY_CONTROL ||
+				motg->phy_irq)
 		bsv_id_hv_int = true;
 	if (motg->host_bus_suspend || motg->device_bus_suspend)
 		dp_dm_hv_int = true;
@@ -1944,7 +2490,7 @@ static void msm_otg_enable_phy_hv_int(struct msm_otg *motg)
 	default:
 		break;
 	}
-	printk("%s: bsv_id_hv = %d dp_dm_hv_int = %d\n",
+	pr_debug("%s: bsv_id_hv = %d dp_dm_hv_int = %d\n",
 			__func__, bsv_id_hv_int, dp_dm_hv_int);
 	msm_otg_dbg_log_event(&motg->phy, "PHY HV INTR ENABLED",
 			bsv_id_hv_int, dp_dm_hv_int);
@@ -1956,9 +2502,8 @@ static void msm_otg_disable_phy_hv_int(struct msm_otg *motg)
 	bool dp_dm_hv_int = false;
 	u32 val;
 
-	if (motg->pdata->otg_control == OTG_PHY_CONTROL)
-/*	if (motg->pdata->otg_control == OTG_PHY_CONTROL ||
-				motg->phy_irq)*/
+	if (motg->pdata->otg_control == OTG_PHY_CONTROL ||
+				motg->phy_irq)
 		bsv_id_hv_int = true;
 	if (motg->host_bus_suspend || motg->device_bus_suspend)
 		dp_dm_hv_int = true;
@@ -1991,7 +2536,7 @@ static void msm_otg_disable_phy_hv_int(struct msm_otg *motg)
 	default:
 		break;
 	}
-	printk("%s: bsv_id_hv = %d dp_dm_hv_int = %d\n",
+	pr_debug("%s: bsv_id_hv = %d dp_dm_hv_int = %d\n",
 			__func__, bsv_id_hv_int, dp_dm_hv_int);
 	msm_otg_dbg_log_event(&motg->phy, "PHY HV INTR DISABLED",
 			bsv_id_hv_int, dp_dm_hv_int);
@@ -2016,7 +2561,7 @@ static void msm_otg_enter_phy_retention(struct msm_otg *motg)
 	default:
 		break;
 	}
-	printk("USB PHY is in retention\n");
+	pr_debug("USB PHY is in retention\n");
 	msm_otg_dbg_log_event(&motg->phy, "USB PHY ENTER RETENTION",
 			motg->pdata->phy_type, 0);
 }
@@ -2041,12 +2586,12 @@ static void msm_otg_exit_phy_retention(struct msm_otg *motg)
 	default:
 		break;
 	}
-	printk("USB PHY is exited from retention\n");
+	pr_debug("USB PHY is exited from retention\n");
 	msm_otg_dbg_log_event(&motg->phy, "USB PHY EXIT RETENTION",
 			motg->pdata->phy_type, 0);
 }
 
-/*static void msm_id_status_w(struct work_struct *w);
+static void msm_id_status_w(struct work_struct *w);
 static irqreturn_t msm_otg_phy_irq_handler(int irq, void *data)
 {
 	struct msm_otg *motg = data;
@@ -2064,10 +2609,9 @@ static irqreturn_t msm_otg_phy_irq_handler(int irq, void *data)
 	}
 
 	return IRQ_HANDLED;
-}*/
+}
 
-#define PHY_SUSPEND_TIMEOUT_USEC	(500 * 1000)
-//#define PHY_SUSPEND_TIMEOUT_USEC (5 * 1000)
+#define PHY_SUSPEND_TIMEOUT_USEC (5 * 1000)
 #define PHY_DEVICE_BUS_SUSPEND_TIMEOUT_USEC 100
 #define PHY_RESUME_TIMEOUT_USEC	(100 * 1000)
 
@@ -2089,17 +2633,18 @@ static int msm_otg_suspend(struct msm_otg *motg)
 	unsigned phy_suspend_timeout;
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-       mutex_lock(&msm_otg_mutex);
+	mutex_lock(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 	cnt = 0;
 	msm_otg_dbg_log_event(phy, "LPM ENTER START",
 			motg->inputs, phy->state);
-        if (atomic_read(&motg->in_lpm)) {
+
+	if (atomic_read(&motg->in_lpm)) {
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-               mutex_unlock(&msm_otg_mutex);
+		mutex_unlock(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-               return 0;
-       }
+		return 0;
+	}
 
 	/*
 	 * Don't allow low power mode if bam pipes are still connected.
@@ -2110,7 +2655,7 @@ static int msm_otg_suspend(struct msm_otg *motg)
 		msm_otg_dbg_log_event(phy, "BAM NOT READY", 0, 0);
 		pm_schedule_suspend(phy->dev, 1000);
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-               mutex_unlock(&msm_otg_mutex);
+		mutex_unlock(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 		return -EBUSY;
 	}
@@ -2381,8 +2926,8 @@ phcd_retry:
 		else
 			enable_irq_wake(motg->irq);
 
-/*		if (motg->phy_irq)
-			enable_irq_wake(motg->phy_irq);*/
+		if (motg->phy_irq)
+			enable_irq_wake(motg->phy_irq);
 		if (motg->pdata->pmic_id_irq)
 			enable_irq_wake(motg->pdata->pmic_id_irq);
 		if (motg->ext_id_irq)
@@ -2416,22 +2961,31 @@ phcd_retry:
 	}
 	wake_unlock(&motg->wlock);
 
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	//ASUS_BSP+++ Show_Wang "Add monitor to check otg suspend status in suspend mode"
+	if (motg->host_mode) {
+		cancel_delayed_work(&asus_otg_suspend_check_work);
+	}
+	//ASUS_BSP--- Show_Wang "Add monitor to check otg suspend status in suspend mode"
+#endif
+
 	dev_dbg(phy->dev, "LPM caps = %lu flags = %lu\n",
 			motg->caps, motg->lpm_flags);
 	dev_info(phy->dev, "USB in low power mode\n");
 	msm_otg_dbg_log_event(phy, "LPM ENTER DONE",
 			motg->caps, motg->lpm_flags);
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-        mutex_unlock(&msm_otg_mutex);
+	mutex_unlock(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 	return 0;
 
 phy_suspend_fail:
 	motg->ui_enabled = 1;
 	enable_irq(motg->irq);
-//ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-        mutex_unlock(&msm_otg_mutex);
-//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
+//ASUS_BSP+++ Steven_Syu "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
+	mutex_unlock(&msm_otg_mutex);
+//ASUS_BSP--- Steven_Syu "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 	return ret;
 }
 
@@ -2456,7 +3010,7 @@ static int msm_otg_resume(struct msm_otg *motg)
 		return 0;
 	}
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-       mutex_lock(&msm_otg_mutex);
+	mutex_lock(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 
 	msm_bam_notify_lpm_resume(CI_CTRL);
@@ -2591,8 +3145,8 @@ skip_phy_resume:
 		else
 			disable_irq_wake(motg->irq);
 
-/*		if (motg->phy_irq)
-			disable_irq_wake(motg->phy_irq);*/
+		if (motg->phy_irq)
+			disable_irq_wake(motg->phy_irq);
 		if (motg->pdata->pmic_id_irq)
 			disable_irq_wake(motg->pdata->pmic_id_irq);
 		if (motg->ext_id_irq)
@@ -2625,11 +3179,20 @@ skip_phy_resume:
 	/* If ASYNC IRQ is present then keep it enabled only during LPM */
 	if (motg->async_irq)
 		disable_irq(motg->async_irq);
-/*
+
 	if (motg->phy_irq_pending) {
 		motg->phy_irq_pending = false;
 		msm_id_status_w(&motg->id_status_work.work);
-	}*/
+	}
+
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	//ASUS_BSP+++ Show_Wang "Add monitor to check otg suspend status in suspend mode"
+	if (motg->host_mode && !g_keep_apple_power_on) {
+		schedule_delayed_work(&asus_otg_suspend_check_work,
+			msecs_to_jiffies(MSM_OTG_SUSPEND_CHECK_TIMEOUT));
+	}
+	//ASUS_BSP--- Show_Wang "Add monitor to check otg suspend status in suspend mode"
+#endif
 
 	if (motg->host_bus_suspend)
 		usb_hcd_resume_root_hub(hcd);
@@ -2637,12 +3200,18 @@ skip_phy_resume:
 	dev_info(phy->dev, "USB exited from low power mode\n");
 	msm_otg_dbg_log_event(phy, "LPM EXIT DONE",
 			motg->caps, motg->lpm_flags);
+
+	if (g_phy_parameter_reset) {
+		ulpi_init(motg);
+		g_phy_parameter_reset = 0;
+	}
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-       mutex_unlock(&msm_otg_mutex);
+	mutex_unlock(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 	return 0;
 }
 #endif
+
 #if 0
 static void msm_otg_notify_host_mode(struct msm_otg *motg, bool host_mode)
 {
@@ -2679,23 +3248,15 @@ static int msm_otg_notify_chg_type(struct msm_otg *motg)
 {
 	static int charger_type;
 	static int chg_type;
-	/*
-	 * TODO
-	 * Unify OTG driver charger types and power supply charger types
-	 */
-	//if (charger_type == motg->chg_type)
+
 	if (chg_type == motg->chg_type)
-        {
-                printk("[usb_otg] %s(%s) already notify, skipped!\n", __func__, chg_to_string(motg->chg_type));
-                return 0;
-        }
+		return 0;
 
 	chg_type = motg->chg_type;
 	cancel_delayed_work(&asus_chg_unknown_delay_work);
 	printk("[usb_otg] %s(%s)\n", __func__, chg_to_string(motg->chg_type));
 	if (motg->chg_type == USB_SDP_CHARGER) {
 		charger_type = POWER_SUPPLY_TYPE_USB;
-		printk("[usb_otg] USB detected\n");
 		schedule_delayed_work(&asus_chg_unknown_delay_work, (2000 * HZ/1000));
 	} else if (motg->chg_type == USB_CDP_CHARGER) {
 		charger_type = POWER_SUPPLY_TYPE_USB_CDP;
@@ -2703,7 +3264,6 @@ static int msm_otg_notify_chg_type(struct msm_otg *motg)
 		asus_otg_set_charger(AC_IN);
 	} else if (motg->chg_type == USB_DCP_CHARGER) {
 		charger_type = POWER_SUPPLY_TYPE_USB_DCP;
-		printk("[usb_otg] DCP detected\n");
 		asus_otg_set_charger(AC_IN);
 //ASUS_BSP+++ Landice "[ZE500KL][USB][NA][spec] Separate SE1 from DCP from charger types"
 	} else if (motg->chg_type == USB_FLOATED_CHARGER || motg->chg_type == USB_PROPRIETARY_CHARGER) {
@@ -2714,16 +3274,13 @@ static int msm_otg_notify_chg_type(struct msm_otg *motg)
 	} else if ((motg->chg_type == USB_ACA_DOCK_CHARGER ||
 		motg->chg_type == USB_ACA_A_CHARGER ||
 		motg->chg_type == USB_ACA_B_CHARGER ||
-		motg->chg_type == USB_ACA_C_CHARGER)){
+		motg->chg_type == USB_ACA_C_CHARGER)) {
 		charger_type = POWER_SUPPLY_TYPE_USB_ACA;
-		printk("[usb_otg] ACA detected\n");
 		asus_otg_set_charger(AC_IN);
 	} else if (motg->chg_type == USB_INVALID_CHARGER && !test_bit(B_SESS_VLD, &motg->inputs)) {
 		charger_type = POWER_SUPPLY_TYPE_UNKNOWN;
-		printk("[usb_otg] Unknown charger with VBus low detected\n");
 		asus_otg_set_charger(CABLE_OUT);
 	} else {
-		printk("[usb_otg] Unknown charger detected\n");
 		charger_type = POWER_SUPPLY_TYPE_UNKNOWN;
 	}
 
@@ -2731,10 +3288,11 @@ static int msm_otg_notify_chg_type(struct msm_otg *motg)
 		pr_err("No USB power supply registered!\n");
 		return -EINVAL;
 	}
-	//printk("[usb_otg] Setting usb power supply type %d\n", charger_type);
-	//pr_debug("setting usb power supply type %d\n", charger_type);
+
+	pr_debug("setting usb power supply type %d\n", charger_type);
 	msm_otg_dbg_log_event(&motg->phy, "SET USB PWR SUPPLY TYPE",
 			motg->chg_type, charger_type);
+	//printk("[usb_otg] Setting usb power supply type %d\n", charger_type);
 	power_supply_set_supply_type(psy, charger_type);
 	return 0;
 }
@@ -2885,12 +3443,42 @@ static void msm_otg_start_host(struct usb_otg *otg, int on)
 	}
 }
 
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+static bool  asus_otg_support_usbdevices(struct usb_device *udev )
+{
+	struct usb_interface_descriptor	*desc = NULL;
+	static int num = 0;
+	int i;
+
+	if ( udev->actconfig ) {
+		num = udev->actconfig->desc.bNumInterfaces;
+		if (num > 0 ) {
+			for ( i = 0; i < num; i++ ) {
+				desc = &udev->actconfig->intf_cache[i]->altsetting->desc;
+				if (desc !=NULL && ((desc->bInterfaceClass == USB_CLASS_MASS_STORAGE && desc->bInterfaceSubClass == 6)
+						|| (desc->bInterfaceClass == USB_CLASS_HID && desc->bInterfaceSubClass == 0)
+						|| (desc->bInterfaceClass == USB_CLASS_HID && desc->bInterfaceSubClass == 1))) {
+					;;
+				} else {
+					return false;
+				}
+			}
+			return true;
+		}
+	}
+	return false;
+}
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
+
 static int msm_otg_usbdev_notify(struct notifier_block *self,
 			unsigned long action, void *priv)
 {
 	struct msm_otg *motg = container_of(self, struct msm_otg, usbdev_nb);
 	struct usb_otg *otg = motg->phy.otg;
 	struct usb_device *udev = priv;
+	struct usb_interface_descriptor	*desc = NULL;
 
 	if (action == USB_BUS_ADD || action == USB_BUS_REMOVE)
 		goto out;
@@ -2911,7 +3499,7 @@ static int msm_otg_usbdev_notify(struct notifier_block *self,
 		if (aca_enabled())
 			usb_disable_autosuspend(udev);
 		if (otg->phy->state == OTG_STATE_A_WAIT_BCON) {
-			printk("B_CONN set\n");
+			pr_debug("B_CONN set\n");
 			msm_otg_dbg_log_event(&motg->phy, "B_CONN SET",
 					motg->inputs, otg->phy->state);
 			set_bit(B_CONN, &motg->inputs);
@@ -2927,17 +3515,72 @@ static int msm_otg_usbdev_notify(struct notifier_block *self,
 		}
 		/* fall through */
 	case USB_DEVICE_CONFIG:
-		if (udev->actconfig)
+		if (udev->actconfig) {
 			motg->mA_port = udev->actconfig->desc.bMaxPower * 2;
-		else
+			desc = &udev->actconfig->intf_cache[0]->altsetting->desc;
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+			if( udev->descriptor.idVendor==__constant_cpu_to_le16(0x05AC)) {
+				g_apple_attach = 1;
+				printk("[usb_otg] otg keep poweron and Apple, Inc, Insert %s \n", __func__);
+			} else {
+				g_apple_attach = 0;
+			}
+			if (g_apple_attach && g_otg_poweron) {
+				g_keep_apple_power_on = 1;
+			} else {
+				g_keep_apple_power_on = 0;
+			}
+#endif
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+			if ( gpio_get_value(NEW_PCB) ) {
+				if (asus_otg_support_usbdevices(udev)) {
+					set_otg_battery_current_limit(950);
+					g_support_device =1 ;
+				} else {
+					set_otg_battery_current_limit(550);
+					g_support_device = 0;
+				}
+			}
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
+			g_keep_power_on = 1;
+			if (desc->bInterfaceClass == USB_CLASS_MASS_STORAGE && desc->bInterfaceSubClass == 6)
+				printk("[usb_otg] USBdisk insert\n");
+			else if (desc->bInterfaceClass == USB_CLASS_AUDIO && desc->bInterfaceSubClass == 1)
+				printk("[usb_otg] USB Sound card insert\n\n");
+			else
+				g_keep_power_on = 0;
+		} else
 			motg->mA_port = IUNIT;
 		if (otg->phy->state == OTG_STATE_B_HOST)
 			msm_otg_del_timer(motg);
 		break;
 	case USB_DEVICE_REMOVE:
+//ASUS_BSP+++ ShowWang "support charging for Iphone when otg poweron"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+		if(udev != NULL && udev->descriptor.idVendor==__constant_cpu_to_le16(0x05AC))
+		{
+			g_apple_attach = 0;
+			g_keep_apple_power_on = 0;
+			printk("[usb_otg] otg keep poweron and Apple, Inc, remove %s VID = %x \n", __func__,udev->descriptor.idVendor);
+		}
+#endif
+//ASUS_BSP--- ShowWang "support charging for Iphone when otg poweron"
+
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+		if ( gpio_get_value(NEW_PCB)  && g_support_device && !test_bit(ID, &motg->inputs)) {
+			set_otg_battery_current_limit(550);
+			g_support_device = 0;
+		}
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
 		if ((otg->phy->state == OTG_STATE_A_HOST) ||
 			(otg->phy->state == OTG_STATE_A_SUSPEND)) {
-			printk("B_CONN clear\n");
+			pr_debug("B_CONN clear\n");
 			msm_otg_dbg_log_event(&motg->phy, "B_CONN CLEAR",
 					motg->inputs, otg->phy->state);
 			clear_bit(B_CONN, &motg->inputs);
@@ -2953,6 +3596,7 @@ static int msm_otg_usbdev_notify(struct notifier_block *self,
 			}
 			queue_work(motg->otg_wq, &motg->sm_work);
 		}
+		g_keep_power_on = 0;
 	default:
 		break;
 	}
@@ -2962,61 +3606,21 @@ static int msm_otg_usbdev_notify(struct notifier_block *self,
 out:
 	return NOTIFY_OK;
 }
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH] Enable/Disable VBUS output on ID events"
 static void msm_hsusb_vbus_power(struct msm_otg *motg, bool on)
 {
-#if 0
-	int ret;
-	static bool vbus_is_on;
+	msm_otg_dbg_log_event(&motg->phy, "VBUS POWER", on, g_vbus_is_on);
 
-	msm_otg_dbg_log_event(&motg->phy, "VBUS POWER", on, vbus_is_on);
-	if (vbus_is_on == on)
-		return;
-
-	if (motg->pdata->vbus_power) {
-		ret = motg->pdata->vbus_power(on);
-		if (!ret)
-			vbus_is_on = on;
+	if (g_vbus_is_on == on) {
+		printk("[usb_otg] VBUS is already %s - skip\n", on?"on":"off");
 		return;
 	}
 
-	if (!vbus_otg) {
-		pr_err("vbus_otg is NULL.");
-		return;
-	}
-
-	/*
-	 * if entering host mode tell the charger to not draw any current
-	 * from usb before turning on the boost.
-	 * if exiting host mode disable the boost before enabling to draw
-	 * current from the source.
-	 */
-	if (on) {
-		msm_otg_notify_host_mode(motg, on);
-		ret = regulator_enable(vbus_otg);
-		if (ret) {
-			pr_err("unable to enable vbus_otg\n");
-			return;
-		}
-		vbus_is_on = true;
-	} else {
-		ret = regulator_disable(vbus_otg);
-		if (ret) {
-			pr_err("unable to disable vbus_otg\n");
-			return;
-		}
-		msm_otg_notify_host_mode(motg, on);
-		vbus_is_on = false;
-	}
-#endif
-       if (g_vbus_is_on == on) {
-               printk("[usb_otg] VBUS is already %s - skip\n", on?"on":"off");
-               return;
-        }
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
-       printk("[usb_otg] %s - VBUS %s\n", __func__, on?"on":"off");
-       asus_otg_set_charger( on ? ENABLE_5V : DISABLE_5V );
-       g_vbus_is_on = on;
+	printk("[usb_otg] %s - VBUS %s\n", __func__, on?"on":"off");
+	asus_otg_set_charger( on ? ENABLE_5V : DISABLE_5V );
+	g_vbus_is_on = on;
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
 }
 //ASUS_BSP--- Landice "[ZE500KL][USBH] Enable/Disable VBUS output on ID events"
@@ -3161,6 +3765,17 @@ static void msm_otg_start_peripheral(struct usb_otg *otg, int on)
 	}
 }
 
+//ASUS_BSP+++ LandiceFu "[ZE500KL][USBH][NA][spec] Support USB1.0/2.0 switch for factory test requirement"
+#ifdef ASUS_FACTORY_BUILD
+extern void penwell_force_udc_reset(void) {
+	struct msm_otg *motg = the_msm_otg;
+	struct usb_otg *otg = motg->phy.otg;
+	msm_otg_start_peripheral(otg, 0);
+	msm_otg_start_peripheral(otg, 1);
+}
+#endif
+//ASUS_BSP--- LandiceFu "[ZE500KL][USBH][NA][spec] Support USB1.0/2.0 switch for factory test requirement"
+
 static int msm_otg_set_peripheral(struct usb_otg *otg,
 					struct usb_gadget *gadget)
 {
@@ -3229,31 +3844,32 @@ static bool msm_otg_read_pmic_id_state(struct msm_otg *motg)
 	 */
 	return !!id;
 }
-/*
+
 static bool msm_otg_read_phy_id_state(struct msm_otg *motg)
 {
 	u8 val;
 
-	*
+	/*
 	 * clear the pending/outstanding interrupts and
 	 * read the ID status from the SRC_STATUS register.
-	 *
+	 */
 	writeb_relaxed(USB_PHY_ID_MASK, USB2_PHY_USB_PHY_INTERRUPT_CLEAR1);
 
 	writeb_relaxed(0x1, USB2_PHY_USB_PHY_IRQ_CMD);
-	*
+	/*
 	 * Databook says 200 usec delay is required for
 	 * clearing the interrupts.
-	 *
+	 */
 	udelay(200);
 	writeb_relaxed(0x0, USB2_PHY_USB_PHY_IRQ_CMD);
 
 	val = readb_relaxed(USB2_PHY_USB_PHY_INTERRUPT_SRC_STATUS);
 	if (val & USB_PHY_IDDIG_1_0)
-		return false; * ID is grounded *
+		return false; /* ID is grounded */
 	else
 		return true;
-}*/
+}
+
 static int msm_otg_mhl_register_callback(struct msm_otg *motg,
 						void (*callback)(int on))
 {
@@ -3771,8 +4387,6 @@ static const char *chg_to_string(enum usb_chg_type chg_type)
 #define MSM_CHG_DCD_POLL_TIME		(50 * HZ/1000) /* 50 msec */
 #define MSM_CHG_PRIMARY_DET_TIME	(50 * HZ/1000) /* TVDPSRC_ON */
 #define MSM_CHG_SECONDARY_DET_TIME	(50 * HZ/1000) /* TVDMSRC_ON */
-
-extern bool g_Charger_mode;
 static void msm_chg_detect_work(struct work_struct *w)
 {
 	struct msm_otg *motg = container_of(w, struct msm_otg, chg_work.work);
@@ -3781,7 +4395,12 @@ static void msm_chg_detect_work(struct work_struct *w)
 	static bool dcd;
 	u32 line_state, dm_vlgc;
 	unsigned long delay;
-        int ret;
+	int ret;
+//ASUS_BSP+++ Show_Wang "[ZC550KL][USB][NA][Spec] re-detect charge type after charge detected first time"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	static bool first_detect=false;
+#endif
+//ASUS_BSP--- Show_Wang "[ZC550KL][USB][NA][Spec] re-detect charge type after charge detected first time"
 
 	dev_dbg(phy->dev, "chg detection work\n");
 	msm_otg_dbg_log_event(phy, "CHG DETECTION WORK",
@@ -3795,13 +4414,13 @@ static void msm_chg_detect_work(struct work_struct *w)
 	/* resume the device first if at all it resumes */
 	pm_runtime_resume(phy->dev);
 
-        if (!gadget_init.done) {
-                ret = wait_for_completion_timeout(&gadget_init,msecs_to_jiffies(2000));
-                if (!ret)
-                        dev_err(motg->phy.dev, "%so: timeout waiting for gadget driver\n",__func__);
-        }
-	
-        switch (motg->chg_state) {
+	if (!gadget_init.done) {
+		ret = wait_for_completion_timeout(&gadget_init,msecs_to_jiffies(8000));
+		if (!ret)
+			dev_err(motg->phy.dev, "%s: timeout waiting for gadget driver\n",__func__);
+	}
+
+	switch (motg->chg_state) {
 	case USB_CHG_STATE_UNDEFINED:
 		msm_chg_block_on(motg);
 		msm_chg_enable_dcd(motg);
@@ -3811,6 +4430,11 @@ static void msm_chg_detect_work(struct work_struct *w)
 		delay = MSM_CHG_DCD_POLL_TIME;
 		break;
 	case USB_CHG_STATE_WAIT_FOR_DCD:
+//ASUS_BSP+++ Show_Wang "[ZC550KL][USB][NA][Spec] re-detect charge type after charge detected first time"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+		first_detect = true;
+#endif
+//ASUS_BSP--- Show_Wang "[ZC550KL][USB][NA][Spec] re-detect charge type after charge detected first time"
 		if (msm_chg_mhl_detect(motg)) {
 			msm_chg_block_off(motg);
 			motg->chg_state = USB_CHG_STATE_DETECTED;
@@ -3906,6 +4530,27 @@ static void msm_chg_detect_work(struct work_struct *w)
 				init_completion(&motg->ext_chg_wait);
 				motg->ext_chg_active = DEFAULT;
 		}
+
+//ASUS_BSP+++ Show_Wang "[ZC550KL][USB][NA][Spec] re-detect charge type after charge detected first time"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+		if(first_detect)
+		{
+			if (motg->chg_type == USB_DCP_CHARGER)
+			{
+				printk("[usb_otg] chg typ detected as DCP first time, delay 0.5s \n");
+				delay=500 * HZ/1000;
+			} else
+			{
+				printk("[usb_otg] chg typ detected as not DCP first time, delay 1s \n");
+				delay=1000 * HZ/1000;
+			}
+			motg->chg_state = USB_CHG_STATE_DCD_DONE;
+			queue_delayed_work(system_nrt_wq, &motg->chg_work, delay);
+			first_detect = false;
+			return;
+		}
+#endif
+//ASUS_BSP--- Show_Wang "[ZC550KL][USB][NA][Spec] re-detect charge type after charge detected first time"
 		msm_otg_notify_chg_type(motg);
 		msm_chg_block_off(motg);
 		msm_chg_enable_aca_det(motg);
@@ -3975,22 +4620,6 @@ static void msm_otg_init_sm(struct msm_otg *motg)
 			else
 				clear_bit(B_SESS_VLD, &motg->inputs);
 		} else if (pdata->otg_control == OTG_PMIC_CONTROL) {
-			if (pdata->pmic_id_irq) {
-				if (msm_otg_read_pmic_id_state(motg))
-					set_bit(ID, &motg->inputs);
-				else
-					clear_bit(ID, &motg->inputs);
-			} else if (motg->ext_id_irq) {
-				if (gpio_get_value(pdata->usb_id_gpio))
-					set_bit(ID, &motg->inputs);
-				else
-					clear_bit(ID, &motg->inputs);
-/*			} else if (motg->phy_irq) {
-				if (msm_otg_read_phy_id_state(motg))
-					set_bit(ID, &motg->inputs);
-				else
-					clear_bit(ID, &motg->inputs);*/
-			}
 			/*
 			 * VBUS initial state is reported after PMIC
 			 * driver initialization. Wait for it.
@@ -4005,6 +4634,26 @@ static void msm_otg_init_sm(struct msm_otg *motg)
 						motg->inputs, motg->phy.state);
 				clear_bit(B_SESS_VLD, &motg->inputs);
 				pmic_vbus_init.done = 1;
+			}
+			if (pdata->pmic_id_irq) {
+				if (msm_otg_read_pmic_id_state(motg))
+					set_bit(ID, &motg->inputs);
+				else
+					clear_bit(ID, &motg->inputs);
+			} else if (motg->ext_id_irq) {
+				if (gpio_get_value(pdata->usb_id_gpio) || test_bit(B_SESS_VLD, &motg->inputs))
+					set_bit(ID, &motg->inputs);
+				else
+					clear_bit(ID, &motg->inputs);
+			} else if (motg->phy_irq) {
+				if (msm_otg_read_phy_id_state(motg))
+					set_bit(ID, &motg->inputs);
+				else
+					clear_bit(ID, &motg->inputs);
+			}
+			if(g_Charger_mode){
+				printk("[usb_otg]Set ID pin in charger mode\n");
+				set_bit(ID, &motg->inputs);
 			}
 		}
 		break;
@@ -4058,7 +4707,7 @@ static void msm_otg_wait_for_ext_chg_done(struct msm_otg *motg)
 	if (motg->ext_chg_active == ACTIVE) {
 
 do_wait:
-		printk("before msm_otg ext chg wait\n");
+		pr_debug("before msm_otg ext chg wait\n");
 		msm_otg_dbg_log_event(&motg->phy, "EXT CHG: WAIT", 0, 0);
 
 		t = wait_for_completion_timeout(&motg->ext_chg_wait,
@@ -4070,7 +4719,7 @@ do_wait:
 		else if (motg->ext_chg_active == ACTIVE)
 			goto do_wait;
 		else
-			printk("msm_otg ext chg wait done\n");
+			pr_debug("msm_otg ext chg wait done\n");
 	}
 
 	if (motg->ext_chg_opened) {
@@ -4099,7 +4748,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		pm_runtime_get_sync(otg->phy->dev);
 		motg->pm_done = 0;
 	}
-	printk("%s work\n", usb_otg_state_string(otg->phy->state));
+	pr_debug("%s work\n", usb_otg_state_string(otg->phy->state));
 	msm_otg_dbg_log_event(&motg->phy, "SM WORK:",
 			otg->phy->state, motg->inputs);
 	switch (otg->phy->state) {
@@ -4133,7 +4782,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			pm_runtime_suspend(otg->phy->dev);
 		} else if ((!test_bit(ID, &motg->inputs) ||
 				test_bit(ID_A, &motg->inputs)) && otg->host) {
-			printk("!id || id_A\n");
+			pr_debug("!id || id_A\n");
 			msm_otg_dbg_log_event(&motg->phy, "!ID || ID_A",
 					motg->inputs, otg->phy->state);
 			if (msm_chg_mhl_detect(motg)) {
@@ -4145,7 +4794,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			otg->phy->state = OTG_STATE_A_IDLE;
 			work = 1;
 		} else if (test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("b_sess_vld\n");
+			pr_debug("b_sess_vld\n");
 			msm_otg_dbg_log_event(&motg->phy, "B_SESS_VLD",
 					motg->inputs, otg->phy->state);
 			switch (motg->chg_state) {
@@ -4218,7 +4867,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				break;
 			}
 		} else if (test_bit(B_BUS_REQ, &motg->inputs)) {
-			printk("b_sess_end && b_bus_req\n");
+			pr_debug("b_sess_end && b_bus_req\n");
 			msm_otg_dbg_log_event(&motg->phy,
 				"B_SESS_END && B_BUS_REQ",
 				motg->inputs, otg->phy->state);
@@ -4231,13 +4880,14 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_start_timer(motg, TB_SRP_FAIL, B_SRP_FAIL);
 			break;
 		} else {
-			printk("chg_work cancel");
+			pr_debug("chg_work cancel");
 			msm_otg_dbg_log_event(&motg->phy, "CHG_WORK CANCEL",
 					motg->inputs, otg->phy->state);
 			del_timer_sync(&motg->chg_check_timer);
 			clear_bit(B_FALSE_SDP, &motg->inputs);
 			clear_bit(A_BUS_REQ, &motg->inputs);
 			cancel_delayed_work_sync(&motg->chg_work);
+			pm_runtime_get_noresume(otg->phy->dev);
 			dcp = (motg->chg_type == USB_DCP_CHARGER);
 			motg->chg_state = USB_CHG_STATE_UNDEFINED;
 			motg->chg_type = USB_INVALID_CHARGER;
@@ -4251,6 +4901,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			}
 			msm_chg_block_off(motg);
 			msm_otg_reset(otg->phy);
+			pm_runtime_put_noidle(otg->phy->dev);
 			/*
 			 * There is a small window where ID interrupt
 			 * is not monitored during ID detection circuit
@@ -4259,7 +4910,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			 */
 			if ((motg->pdata->otg_control == OTG_PMIC_CONTROL) &&
 					!msm_otg_read_pmic_id_state(motg)) {
-				printk("process missed ID intr\n");
+				pr_debug("process missed ID intr\n");
 				msm_otg_dbg_log_event(&motg->phy,
 						"PROCESS MISSED ID INTR",
 						motg->inputs, otg->phy->state);
@@ -4283,6 +4934,17 @@ static void msm_otg_sm_work(struct work_struct *w)
 					"PM RUNTIME: NOCHG PUT DONE",
 					get_pm_runtime_counter(otg->phy->dev),
 					motg->pm_done);
+			#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+			
+			#else
+				if(is_usb_chg_plugged && !g_host_none_mode) {
+					printk("[USB] b idel retry b_sess_vld\n");
+					set_bit(B_SESS_VLD, &motg->inputs);
+					work = 1;
+					break;
+				}
+			#endif
+			printk("[USB] b idel chg_work cancel\n");
 		}
 		break;
 	case OTG_STATE_B_SRP_INIT:
@@ -4291,7 +4953,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				test_bit(ID_C, &motg->inputs) ||
 				(test_bit(B_SESS_VLD, &motg->inputs) &&
 				!test_bit(ID_B, &motg->inputs))) {
-			printk("!id || id_a/c || b_sess_vld+!id_b\n");
+			pr_debug("!id || id_a/c || b_sess_vld+!id_b\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"!ID || ID_A/C || B_SESS_VLD+!ID_B",
 					motg->inputs, otg->phy->state);
@@ -4304,7 +4966,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			ulpi_write(otg->phy, 0x0, 0x98);
 			work = 1;
 		} else if (test_bit(B_SRP_FAIL, &motg->tmouts)) {
-			printk("b_srp_fail\n");
+			pr_debug("b_srp_fail\n");
 			msm_otg_dbg_log_event(&motg->phy, "B_SRP_FAIL",
 					motg->inputs, otg->phy->state);
 			pr_info("A-device did not respond to SRP\n");
@@ -4320,13 +4982,13 @@ static void msm_otg_sm_work(struct work_struct *w)
 	case OTG_STATE_B_PERIPHERAL:
 		if (test_bit(B_SESS_VLD, &motg->inputs) &&
 				test_bit(B_FALSE_SDP, &motg->inputs)) {
-			printk("B_FALSE_SDP\n");
+			pr_debug("B_FALSE_SDP\n");
 			msm_otg_dbg_log_event(&motg->phy, "B_FALSE_SDP",
 					motg->inputs, otg->phy->state);
 			msm_otg_start_peripheral(otg, 0);
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
-                       cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
-                       asus_otg_set_charger(AC_IN);
+			cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
+			asus_otg_set_charger(AC_IN);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
 			motg->chg_type = USB_DCP_CHARGER;
 			clear_bit(B_FALSE_SDP, &motg->inputs);
@@ -4336,7 +4998,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				test_bit(ID_A, &motg->inputs) ||
 				test_bit(ID_B, &motg->inputs) ||
 				!test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("!id  || id_a/b || !b_sess_vld\n");
+			pr_debug("!id  || id_a/b || !b_sess_vld\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"!ID || ID_A/B || !B_SESS_VLD",
 					motg->inputs, otg->phy->state);
@@ -4358,7 +5020,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		} else if (test_bit(B_BUS_REQ, &motg->inputs) &&
 				otg->gadget->b_hnp_enable &&
 				test_bit(A_BUS_SUSPEND, &motg->inputs)) {
-			printk("b_bus_req && b_hnp_en && a_bus_suspend\n");
+			pr_debug("b_bus_req && b_hnp_en && a_bus_suspend\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"B_BUS_REQ && B_HNP_EN && A_BUS_SUSPEND",
 					motg->inputs, otg->phy->state);
@@ -4378,7 +5040,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_start_host(otg, 1);
 		} else if (test_bit(A_BUS_SUSPEND, &motg->inputs) &&
 				   test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("a_bus_suspend && b_sess_vld\n");
+			pr_debug("a_bus_suspend && b_sess_vld\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"A_BUS_SUSPEND && B_SESS_VLD",
 					motg->inputs, otg->phy->state);
@@ -4397,7 +5059,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		break;
 	case OTG_STATE_B_CHARGER:
 		if (test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("BSV set again\n");
+			pr_debug("BSV set again\n");
 			msm_otg_dbg_log_event(&motg->phy, "BSV SET AGAIN",
 					motg->inputs, otg->phy->state);
 		} else if (!test_bit(B_SESS_VLD, &motg->inputs)) {
@@ -4410,7 +5072,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				test_bit(ID_A, &motg->inputs) ||
 				test_bit(ID_B, &motg->inputs) ||
 				!test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("!id || id_a/b || !b_sess_vld\n");
+			pr_debug("!id || id_a/b || !b_sess_vld\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"!ID || ID_A/B || !B_SESS_VLD",
 					motg->inputs, otg->phy->state);
@@ -4429,7 +5091,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_reset(otg->phy);
 			work = 1;
 		} else if (test_bit(A_CONN, &motg->inputs)) {
-			printk("a_conn\n");
+			pr_debug("a_conn\n");
 			msm_otg_dbg_log_event(&motg->phy, "A_CONN",
 					motg->inputs, otg->phy->state);
 			clear_bit(A_BUS_SUSPEND, &motg->inputs);
@@ -4444,7 +5106,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_start_timer(motg, TB_TST_CONFIG,
 						B_TST_CONFIG);
 		} else if (test_bit(B_ASE0_BRST, &motg->tmouts)) {
-			printk("b_ase0_brst_tmout\n");
+			pr_debug("b_ase0_brst_tmout\n");
 			msm_otg_dbg_log_event(&motg->phy, "B_ASE0_BRST_TMOUT",
 					motg->inputs, otg->phy->state);
 			pr_info("B HNP fail:No response from A device\n");
@@ -4465,7 +5127,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		if (!test_bit(B_BUS_REQ, &motg->inputs) ||
 				!test_bit(A_CONN, &motg->inputs) ||
 				!test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("!b_bus_req || !a_conn || !b_sess_vld\n");
+			pr_debug("!b_bus_req || !a_conn || !b_sess_vld\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"!B_BUS_REQ || !A_CONN || !B_SESS_VLD",
 					motg->inputs, otg->phy->state);
@@ -4484,7 +5146,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		otg->default_a = 1;
 		if (test_bit(ID, &motg->inputs) &&
 			!test_bit(ID_A, &motg->inputs)) {
-			printk("id && !id_a\n");
+			pr_debug("id && !id_a\n");
 			msm_otg_dbg_log_event(&motg->phy, "!ID || ID_A",
 					motg->inputs, otg->phy->state);
 			otg->default_a = 0;
@@ -4498,7 +5160,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		} else if (!test_bit(A_BUS_DROP, &motg->inputs) &&
 				(test_bit(A_SRP_DET, &motg->inputs) ||
 				 test_bit(A_BUS_REQ, &motg->inputs))) {
-			printk("!a_bus_drop && (a_srp_det || a_bus_req)\n");
+			pr_debug("!a_bus_drop && (a_srp_det || a_bus_req)\n");
 			msm_otg_dbg_log_event(&motg->phy,
 				"!A_BUS_DROP || A_SRP_DET || A_BUS_REQ",
 				motg->inputs, otg->phy->state);
@@ -4521,7 +5183,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				msm_hsusb_vbus_power(motg, 1);
 			msm_otg_start_timer(motg, TA_WAIT_VRISE, A_WAIT_VRISE);
 		} else {
-			printk("No session requested\n");
+			pr_debug("No session requested\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"NO SESSION REQUESTED",
 					motg->inputs, otg->phy->state);
@@ -4548,7 +5210,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				!test_bit(ID_A, &motg->inputs)) ||
 				test_bit(A_BUS_DROP, &motg->inputs) ||
 				test_bit(A_WAIT_VRISE, &motg->tmouts)) {
-			printk("id || a_bus_drop || a_wait_vrise_tmout\n");
+			pr_debug("id || a_bus_drop || a_wait_vrise_tmout\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"ID || A_BUS_DROP || A_WAIT_VRISE_TMOUT",
 					motg->inputs, otg->phy->state);
@@ -4558,7 +5220,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			otg->phy->state = OTG_STATE_A_WAIT_VFALL;
 			msm_otg_start_timer(motg, TA_WAIT_VFALL, A_WAIT_VFALL);
 		} else if (test_bit(A_VBUS_VLD, &motg->inputs)) {
-			printk("a_vbus_vld\n");
+			pr_debug("a_vbus_vld\n");
 			msm_otg_dbg_log_event(&motg->phy, "A_VBUS_VLD",
 					motg->inputs, otg->phy->state);
 			otg->phy->state = OTG_STATE_A_WAIT_BCON;
@@ -4581,7 +5243,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				!test_bit(ID_A, &motg->inputs)) ||
 				test_bit(A_BUS_DROP, &motg->inputs) ||
 				test_bit(A_WAIT_BCON, &motg->tmouts)) {
-			printk("(id && id_a/b/c) || a_bus_drop ||"
+			pr_debug("(id && id_a/b/c) || a_bus_drop ||"
 					"a_wait_bcon_tmout\n");
 			msm_otg_dbg_log_event(&motg->phy,
 				"(ID && ID_A/B/C )|| A_BUSS_DROP || A_WAIT_BCON_TMOUT",
@@ -4600,12 +5262,21 @@ static void msm_otg_sm_work(struct work_struct *w)
 			 */
 			if (test_bit(ID_A, &motg->inputs))
 				msm_otg_notify_charger(motg, IDEV_CHG_MIN);
-			else
+			else{
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+				if(!g_otg_poweron) {
+					msm_hsusb_vbus_power(motg, 0);
+				}
+#else
 				msm_hsusb_vbus_power(motg, 0);
+#endif
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+			}
 			otg->phy->state = OTG_STATE_A_WAIT_VFALL;
 			msm_otg_start_timer(motg, TA_WAIT_VFALL, A_WAIT_VFALL);
 		} else if (!test_bit(A_VBUS_VLD, &motg->inputs)) {
-			printk("!a_vbus_vld\n");
+			pr_debug("!a_vbus_vld\n");
 			msm_otg_dbg_log_event(&motg->phy, "!A_VBUS_VLD",
 					motg->inputs, otg->phy->state);
 			clear_bit(B_CONN, &motg->inputs);
@@ -4635,7 +5306,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		if ((test_bit(ID, &motg->inputs) &&
 				!test_bit(ID_A, &motg->inputs)) ||
 				test_bit(A_BUS_DROP, &motg->inputs)) {
-			printk("id_a/b/c || a_bus_drop\n");
+			pr_debug("id_a/b/c || a_bus_drop\n");
 			msm_otg_dbg_log_event(&motg->phy,
 					"ID_A/B/C || A_VBUS_DROP",
 					motg->inputs, otg->phy->state);
@@ -4644,11 +5315,20 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_del_timer(motg);
 			otg->phy->state = OTG_STATE_A_WAIT_VFALL;
 			msm_otg_start_host(otg, 0);
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+			if (!g_otg_poweron && !test_bit(ID_A, &motg->inputs)) {
+				msm_hsusb_vbus_power(motg, 0);
+			}
+#else
 			if (!test_bit(ID_A, &motg->inputs))
 				msm_hsusb_vbus_power(motg, 0);
+#endif
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+
 			msm_otg_start_timer(motg, TA_WAIT_VFALL, A_WAIT_VFALL);
 		} else if (!test_bit(A_VBUS_VLD, &motg->inputs)) {
-			printk("!a_vbus_vld\n");
+			pr_debug("!a_vbus_vld\n");
 			msm_otg_dbg_log_event(&motg->phy, "!A_VBUS_VLD",
 					motg->inputs, otg->phy->state);
 			clear_bit(B_CONN, &motg->inputs);
@@ -4661,7 +5341,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			 * a_bus_req is de-asserted when root hub is
 			 * suspended or HNP is in progress.
 			 */
-			printk("!a_bus_req\n");
+			pr_debug("!a_bus_req\n");
 			msm_otg_dbg_log_event(&motg->phy, "A_BUS_REQ",
 					motg->inputs, otg->phy->state);
 			msm_otg_del_timer(motg);
@@ -4677,7 +5357,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				pm_runtime_put_sync(otg->phy->dev);
 			}
 		} else if (!test_bit(B_CONN, &motg->inputs)) {
-			printk("!b_conn\n");
+			pr_debug("!b_conn\n");
 			msm_otg_dbg_log_event(&motg->phy, "!B_CONN",
 					motg->inputs, otg->phy->state);
 			msm_otg_del_timer(motg);
@@ -4708,7 +5388,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				!test_bit(ID_A, &motg->inputs)) ||
 				test_bit(A_BUS_DROP, &motg->inputs) ||
 				test_bit(A_AIDL_BDIS, &motg->tmouts)) {
-			printk("id_a/b/c || a_bus_drop ||"
+			pr_debug("id_a/b/c || a_bus_drop ||"
 					"a_aidl_bdis_tmout\n");
 			msm_otg_dbg_log_event(&motg->phy,
 				"ID_A/B/C || A_BUS_DROP || A_AIDL_BDIS_TMOUT",
@@ -4721,7 +5401,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				msm_hsusb_vbus_power(motg, 0);
 			msm_otg_start_timer(motg, TA_WAIT_VFALL, A_WAIT_VFALL);
 		} else if (!test_bit(A_VBUS_VLD, &motg->inputs)) {
-			printk("!a_vbus_vld\n");
+			pr_debug("!a_vbus_vld\n");
 			msm_otg_dbg_log_event(&motg->phy, "!A_VBUS_VLD",
 					motg->inputs, otg->phy->state);
 			msm_otg_del_timer(motg);
@@ -4731,7 +5411,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_reset(otg->phy);
 		} else if (!test_bit(B_CONN, &motg->inputs) &&
 				otg->host->b_hnp_enable) {
-			printk("!b_conn && b_hnp_enable");
+			pr_debug("!b_conn && b_hnp_enable");
 			msm_otg_dbg_log_event(&motg->phy,
 					"!B_CONN && B_HNP_ENABLED",
 					motg->inputs, otg->phy->state);
@@ -4741,7 +5421,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			msm_otg_start_peripheral(otg, 1);
 		} else if (!test_bit(B_CONN, &motg->inputs) &&
 				!otg->host->b_hnp_enable) {
-			printk("!b_conn && !b_hnp_enable");
+			pr_debug("!b_conn && !b_hnp_enable");
 			msm_otg_dbg_log_event(&motg->phy,
 					"!B_CONN && !B_HNP_ENABLE",
 					motg->inputs, otg->phy->state);
@@ -4767,7 +5447,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 		if ((test_bit(ID, &motg->inputs) &&
 				!test_bit(ID_A, &motg->inputs)) ||
 				test_bit(A_BUS_DROP, &motg->inputs)) {
-			printk("id _f/b/c || a_bus_drop\n");
+			pr_debug("id _f/b/c || a_bus_drop\n");
 			msm_otg_dbg_log_event(&motg->phy, "ID_A/B/C A_BUS_DROP",
 					motg->inputs, otg->phy->state);
 			/* Clear BIDL_ADIS timer */
@@ -4781,7 +5461,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 				msm_hsusb_vbus_power(motg, 0);
 			msm_otg_start_timer(motg, TA_WAIT_VFALL, A_WAIT_VFALL);
 		} else if (!test_bit(A_VBUS_VLD, &motg->inputs)) {
-			printk("!a_vbus_vld\n");
+			pr_debug("!a_vbus_vld\n");
 			msm_otg_dbg_log_event(&motg->phy, "!A_VBUS_VLD",
 					motg->inputs, otg->phy->state);
 			/* Clear BIDL_ADIS timer */
@@ -4791,7 +5471,7 @@ static void msm_otg_sm_work(struct work_struct *w)
 			otg->gadget->is_a_peripheral = 0;
 			msm_otg_start_host(otg, 0);
 		} else if (test_bit(A_BIDL_ADIS, &motg->tmouts)) {
-			printk("a_bidl_adis_tmout\n");
+			pr_debug("a_bidl_adis_tmout\n");
 			msm_otg_dbg_log_event(&motg->phy, "A_BIDL_ADIS_TMOUT",
 					motg->inputs, otg->phy->state);
 			msm_otg_start_peripheral(otg, 0);
@@ -4858,7 +5538,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 	irqreturn_t ret = IRQ_HANDLED;
 
 	if (atomic_read(&motg->in_lpm)) {
-		printk("OTG IRQ: %d in LPM\n", irq);
+		pr_debug("OTG IRQ: %d in LPM\n", irq);
 		msm_otg_dbg_log_event(&motg->phy, "OTG IRQ IS IN LPM",
 				irq, otg->phy->state);
 		disable_irq_nosync(irq);
@@ -4906,7 +5586,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 		writel_relaxed(otgsc, USB_OTGSC);
 		work = 1;
 	} else if (otgsc & OTGSC_DPIS) {
-		printk("DPIS detected\n");
+		pr_debug("DPIS detected\n");
 		writel_relaxed(otgsc, USB_OTGSC);
 		set_bit(A_SRP_DET, &motg->inputs);
 		set_bit(A_BUS_REQ, &motg->inputs);
@@ -4938,7 +5618,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 		work = 1;
 	} else if (usbsts & STS_PCI) {
 		pc = readl_relaxed(USB_PORTSC);
-		printk("portsc = %x\n", pc);
+		pr_debug("portsc = %x\n", pc);
 		msm_otg_dbg_log_event(&motg->phy, "PORTSC",
 				motg->inputs, otg->phy->state);
 		ret = IRQ_NONE;
@@ -4951,7 +5631,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 		case OTG_STATE_A_SUSPEND:
 			if (otg->host->b_hnp_enable && (pc & PORTSC_CSC) &&
 					!(pc & PORTSC_CCS)) {
-				printk("B_CONN clear\n");
+				pr_debug("B_CONN clear\n");
 				msm_otg_dbg_log_event(&motg->phy,
 						"B_CONN CLEAR",
 						motg->inputs, otg->phy->state);
@@ -4969,7 +5649,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 			break;
 		case OTG_STATE_B_WAIT_ACON:
 			if ((pc & PORTSC_CSC) && (pc & PORTSC_CCS)) {
-				printk("A_CONN set\n");
+				pr_debug("A_CONN set\n");
 				msm_otg_dbg_log_event(&motg->phy, "A_CONN SET",
 						motg->inputs, otg->phy->state);
 				set_bit(A_CONN, &motg->inputs);
@@ -4979,7 +5659,7 @@ static irqreturn_t msm_otg_irq(int irq, void *data)
 			break;
 		case OTG_STATE_B_HOST:
 			if ((pc & PORTSC_CSC) && !(pc & PORTSC_CCS)) {
-				printk("A_CONN clear\n");
+				pr_debug("A_CONN clear\n");
 				msm_otg_dbg_log_event(&motg->phy,
 						"A_CONN CLEAR",
 						motg->inputs, otg->phy->state);
@@ -5043,35 +5723,17 @@ static void msm_otg_set_vbus_state(int online)
 {
 	struct msm_otg *motg = the_msm_otg;
 	static bool init;
+    is_usb_chg_plugged = online;
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-       if(motg->otg_mode != USB_AUTO || (motg->host_mode && g_host_none_mode)) {
-               printk("[usb_otg] Not in auto mode, skip set vbus state, mode%d, none=%d)\n", motg->otg_mode, g_host_none_mode);
-               return;
-       }
+	if(((motg->otg_mode != USB_AUTO) && (motg->otg_mode != USB_PERIPHERAL)) || (motg->host_mode && g_host_none_mode)) {
+		printk("[usb_otg] Not in auto mode, skip set vbus state, mode%d, none=%d)\n", motg->otg_mode, g_host_none_mode);
+		return;
+	}
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 
-	if (online) {
-		printk("PMIC: BSV set\n");
-		msm_otg_dbg_log_event(&motg->phy, "PMIC: BSV SET",
-				init, motg->inputs);
-		if (test_and_set_bit(B_SESS_VLD, &motg->inputs) && init)
-                {
-		        printk("%s:return BSV set\n",__func__);
-			return;
-                }
-	} else {
-		printk("PMIC: BSV clear\n");
-		msm_otg_dbg_log_event(&motg->phy, "PMIC: BSV CLEAR",
-				init, motg->inputs);
-		if (!test_and_clear_bit(B_SESS_VLD, &motg->inputs) && init)
-                {
-		        printk("%s:return BSV clear\n",__func__);
-			return;
-                }
-	}
-
 	/* do not queue state m/c work if id is grounded */
-	if (!test_bit(ID, &motg->inputs)) {
+	if (!test_bit(ID, &motg->inputs) || g_screenoff_id_ground) {
 		/*
 		 * state machine work waits for initial VBUS
 		 * completion in UNDEFINED state.  Process
@@ -5081,17 +5743,31 @@ static void msm_otg_set_vbus_state(int online)
 			return;
 	}
 
+	if (online) {
+		printk("[usb_otg] BSV set\n");
+		msm_otg_dbg_log_event(&motg->phy, "PMIC: BSV SET",
+				init, motg->inputs);
+		if (test_and_set_bit(B_SESS_VLD, &motg->inputs) && init)
+			return;
+	} else {
+		printk("[usb_otg] BSV clear\n");
+		msm_otg_dbg_log_event(&motg->phy, "PMIC: BSV CLEAR",
+				init, motg->inputs);
+		if (!test_and_clear_bit(B_SESS_VLD, &motg->inputs) && init)
+			return;
+	}
+
 	if (!init) {
 		init = true;
 		if (pmic_vbus_init.done &&
 				test_bit(B_SESS_VLD, &motg->inputs)) {
-			printk("PMIC: BSV came late\n");
+			pr_debug("PMIC: BSV came late\n");
 			msm_otg_dbg_log_event(&motg->phy, "PMIC: BSV CAME LATE",
 					init, motg->inputs);
 			goto out;
 		}
 		complete(&pmic_vbus_init);
-		printk("PMIC: BSV init complete\n");
+		pr_debug("PMIC: BSV init complete\n");
 		msm_otg_dbg_log_event(&motg->phy, "PMIC: BSV INIT COMPLETE",
 				init, motg->inputs);
 		return;
@@ -5100,7 +5776,7 @@ static void msm_otg_set_vbus_state(int online)
 out:
 	if (test_bit(MHL, &motg->inputs) ||
 			mhl_det_in_progress) {
-		printk("PMIC: BSV interrupt ignored in MHL\n");
+		pr_debug("PMIC: BSV interrupt ignored in MHL\n");
 		return;
 	}
 
@@ -5122,75 +5798,102 @@ static void msm_id_status_w(struct work_struct *w)
 	int work = 0;
 	int id_state = 0;
 
-	printk("ID status_w\n");
+	if (g_Charger_mode || (test_bit(B_SESS_VLD, &motg->inputs) && !g_host_charging_mode)) {
+		printk("[usb_otg] skip %s Charger mode(%d) or vbus valid\n", __func__, g_Charger_mode);
+		return;
+	}
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
 	if (motg->pdata->pmic_id_irq)
 		id_state = msm_otg_read_pmic_id_state(motg);
 	else if (motg->ext_id_irq)
 		id_state = gpio_get_value(motg->pdata->usb_id_gpio);
-/*	else if (motg->phy_irq)
-		id_state = msm_otg_read_phy_id_state(motg);*/
-       //Ignore host ID in host none mode. Ignore all ID event in manual mode
-       if(motg->otg_mode == USB_AUTO && !(g_screen_off && !id_state)) {
-//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
-               printk("[usb_otg] %s, otg_mode = %d\n", __func__, motg->otg_mode);
-       } else {
-               printk("[usb_otg] %s, otg_mode = %d, skip ID detection (%d)(%d)\n",
-                       __func__, motg->otg_mode, id_state, g_screen_off);
-               return;
-       }
-//ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
+	else if (motg->phy_irq)
+		id_state = msm_otg_read_phy_id_state(motg);
 
-        if(motg->host_mode == false){
-	        printk("[usb_otg] %s:first check vbus \n",__func__);
-                if(test_bit(B_SESS_VLD, &motg->inputs)){
-                        printk("[usb_otg]PMIC: BSV IS SET, skip %s\n",__func__);
-                        return;
-                }
-	        printk("[usb_otg] %s:wait 500ms+++ \n",__func__);
-                msleep(500);
-	        printk("[usb_otg] %s:wait 500ms--- \n",__func__);
-	        printk("[usb_otg] %s:second check vbus \n",__func__);
-                if(test_bit(B_SESS_VLD, &motg->inputs)){
-                        printk("[usb_otg]PMIC: BSV IS SET, skip %s\n",__func__);
-                        return;
-                        }
-        }else{
-	        printk("[usb_otg] %s:otg host_mode ==<%d>,skip 500ms debounce\n",__func__,motg->host_mode);
-        }
+//ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Workaround for factory issue that receive same ID events continuously"
+	if (id_state == old_id_state) {
+		printk("[usb_otg] %s, skip same id event %d\n", __func__, id_state);
+		return;
+	}
+//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Workaround for factory issue that receive same ID events continuously"
+	//Ignore host ID in host none mode. Ignore all ID event in manual mode
+
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	if(!g_otg_poweron)
+	{
+		if(motg->otg_mode == USB_AUTO && !(g_screen_off && !id_state)) {
+	//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
+			g_screenoff_id_ground = false;
+			printk("[usb_otg] %s, otg_mode = %d\n", __func__, motg->otg_mode);
+		} else {
+			g_screenoff_id_ground = true;
+			printk("[usb_otg] %s, otg_mode = %d, skip ID detection (%d)(%d)\n",
+				__func__, motg->otg_mode, id_state, g_screen_off);
+			return;
+		}
+	}
+#else
+	if(motg->otg_mode == USB_AUTO && !(g_screen_off && !id_state)) {
+//ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Skip set ID events when screen off"
+		g_screenoff_id_ground = false;
+		printk("[usb_otg] %s, otg_mode = %d\n", __func__, motg->otg_mode);
+	} else {
+		g_screenoff_id_ground = true;
+		printk("[usb_otg] %s, otg_mode = %d, skip ID detection (%d)(%d)\n",
+			__func__, motg->otg_mode, id_state, g_screen_off);
+		return;
+	}
+#endif
+//ASUS_BSP--- ShowWang "Enable otg poweron switching"
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 	if (id_state) {
-/*		if (gpio_is_valid(motg->pdata->switch_sel_gpio))
-			gpio_direction_input(motg->pdata->switch_sel_gpio);
-		if (!test_and_set_bit(ID, &motg->inputs)) {
-			pr_debug("ID set\n");
-			msm_otg_dbg_log_event(&motg->phy, "ID SET",
-					motg->inputs, motg->phy.state);
-			work = 1;
-		}*/
-               set_bit(ID, &motg->inputs);
-               printk("[usb_otg] %s - ID set\n", __func__);
-               work = 1;
-               motg->host_mode = false;
-               asus_otg_host_mode_cleanup();
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+//ASUS_BSP---ShowWang "Enable otg poweron switching"
+		set_bit(ID, &motg->inputs);
+		printk("[usb_otg] %s - ID set\n", __func__);
+		msm_otg_dbg_log_event(&motg->phy, "ID SET",
+				motg->inputs, motg->phy.state);
+		work = 1;
+		motg->host_mode = false;
+		asus_otg_host_mode_cleanup();
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	if ( (HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) && g_CHG_mode != 2) {
+		asus_otg_chargetype_set(1);
+	}
+#endif
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+		schedule_delayed_work(&asus_check_disable_5V_work, (500 * HZ/1000));
+#endif
+//ASUS_BSP---ShowWang "Enable otg poweron switching"
 	} else {
-/*		if (gpio_is_valid(motg->pdata->switch_sel_gpio))
-			gpio_direction_output(motg->pdata->switch_sel_gpio, 1);
-		if (test_and_clear_bit(ID, &motg->inputs)) {
-			pr_debug("ID clear\n");
-			msm_otg_dbg_log_event(&motg->phy, "ID CLEAR",
-					motg->inputs, motg->phy.state);
-			set_bit(A_BUS_REQ, &motg->inputs);
-			work = 1;
-		}*/
-               clear_bit(ID, &motg->inputs);
-               printk("[usb_otg] %s - ID clear\n", __func__);
-               set_bit(A_BUS_REQ, &motg->inputs);
-               work = 1;
-               motg->host_mode = true;
-               asus_otg_host_mode_prepare();
+		clear_bit(ID, &motg->inputs);
+		printk("[usb_otg] %s - ID clear\n", __func__);
+		msm_otg_dbg_log_event(&motg->phy, "ID CLEAR",
+				motg->inputs, motg->phy.state);
+		set_bit(A_BUS_REQ, &motg->inputs);
+		work = 1;
+		motg->host_mode = true;
+		asus_otg_host_mode_prepare();
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+		cancel_delayed_work_sync(&asus_check_disable_5V_work);
+#endif
+//ASUS_BSP---ShowWang "Enable otg poweron switching"
 	}
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
+	old_id_state = id_state;
+//ASUS_BSP+++ ShowWang "send otg id event to framework"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	if (HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) {
+		switch_set_state(&asus_msm_otg_id, !old_id_state);
+		printk("[usb_otg] %s - send otg id cable plug %s\n", __func__, !id_state?"in":"out");
+	}
+#endif
+//ASUS_BSP--- ShowWang "send otg id event to framework"
+
 	if (work && (motg->phy.state != OTG_STATE_UNDEFINED)) {
 		msm_otg_dbg_log_event(&motg->phy,
 				"CHECK ID EVENT DURING SUSPEND",
@@ -5206,21 +5909,51 @@ static void msm_id_status_w(struct work_struct *w)
 
 }
 
-#define MSM_ID_STATUS_DELAY	5 /* 5msec */
+//ASUS_BSP+++ ShowWang "set USB status gpio irq"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+static irqreturn_t asus_otg_status_irq(int irq, void *data)
+{
+	struct msm_otg *motg = data;
+	if (HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) {
+		 if (gpio_get_value(motg->pdata->tps2546_status_gpio)) {
+			printk("[usb_otg] tps2546_status_gpio is high, usb devices remove \n" );
+			//ASUS_BSP+++ ShowWang "send otg status event to framework"
+			switch_set_state(&asus_msm_otg_status, 0);
+			//ASUS_BSP--- ShowWang "send otg status event to framework"
+		 } else {
+			//ASUS_BSP+++ ShowWang "send otg status event to framework"
+			switch_set_state(&asus_msm_otg_status, 1);
+			//ASUS_BSP--- ShowWang "send otg status event to framework"
+			printk("[usb_otg] tps2546_status_gpio is low, usb devices insert \n" );
+		 }
+	}
+	return IRQ_HANDLED;
+}
+#endif
+//ASUS_BSP--- ShowWang "set USB status gpio irq"
+
+#define MSM_ID_STATUS_DELAY	500 /* 500msec */
 static irqreturn_t msm_id_irq(int irq, void *data)
 {
 	struct msm_otg *motg = data;
+	int delay;
+
+	cancel_delayed_work(&motg->id_status_work);
 
 	if (test_bit(MHL, &motg->inputs) ||
 			mhl_det_in_progress) {
-		printk("PMIC: Id interrupt ignored in MHL\n");
+		pr_debug("PMIC: Id interrupt ignored in MHL\n");
 		return IRQ_HANDLED;
 	}
+
+	delay = (fix_delay > 0) ? fix_delay : MSM_ID_STATUS_DELAY;
+
+	printk("ID de-bounce time = %d ms\n",delay);
 
 	if (!aca_id_turned_on)
 		/*schedule delayed work for 5msec for ID line state to settle*/
 		queue_delayed_work(motg->otg_wq, &motg->id_status_work,
-				msecs_to_jiffies(MSM_ID_STATUS_DELAY));
+				msecs_to_jiffies(delay));
 
 	return IRQ_HANDLED;
 }
@@ -5539,11 +6272,7 @@ static int otg_power_get_property_usb(struct power_supply *psy,
 		break;
 	/* Reflect USB enumeration */
 	case POWER_SUPPLY_PROP_ONLINE:
-		if(((g_charger_state == USB_IN) ? 1 : 0) ||(motg->online))
-			val->intval = 1;
-		else
-			val->intval = 0;
-		//val->intval = motg->online;
+		val->intval = motg->online;
 		break;
 	case POWER_SUPPLY_PROP_TYPE:
 		val->intval = psy->type;
@@ -5553,6 +6282,9 @@ static int otg_power_get_property_usb(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		val->intval = otg_get_prop_usbin_voltage_now(motg);
+		break;
+	case POWER_SUPPLY_PROP_USB_OTG:
+		val->intval = !test_bit(ID, &motg->inputs);
 		break;
 	default:
 		return -EINVAL;
@@ -5666,6 +6398,7 @@ static enum power_supply_property otg_pm_power_props_usb[] = {
 	POWER_SUPPLY_PROP_SCOPE,
 	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_USB_OTG,
 };
 
 const struct file_operations msm_otg_bus_fops = {
@@ -5751,6 +6484,14 @@ static int msm_otg_debugfs_init(struct msm_otg *motg)
 	}
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Add dynamic setting support for phy parameters"
+	msm_otg_dentry = debugfs_create_file("phy_parameter_a", S_IRUGO |
+		S_IWUSR, msm_otg_dbg_root, motg, &msm_otg_phy_parameter_a_fops);
+
+	if (!msm_otg_dentry) {
+		debugfs_remove_recursive(msm_otg_dbg_root);
+		return -ENODEV;
+	}
+	
 	msm_otg_dentry = debugfs_create_file("phy_parameter_b", S_IRUGO |
 		S_IWUSR, msm_otg_dbg_root, motg, &msm_otg_phy_parameter_b_fops);
 
@@ -5785,6 +6526,13 @@ static int msm_otg_debugfs_init(struct msm_otg *motg)
 		return -ENODEV;
 	}
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][other] Add debug file for checking VBUS output status"
+	msm_otg_dentry = debugfs_create_file("id_debounce", S_IRUGO |
+		S_IWUSR, msm_otg_dbg_root, motg, &id_debounce_fops);
+
+	if (!msm_otg_dentry) {
+		debugfs_remove_recursive(msm_otg_dbg_root);
+		return -ENODEV;
+	}
 	return 0;
 }
 
@@ -5943,7 +6691,7 @@ static int msm_otg_ext_chg_open(struct inode *inode, struct file *file)
 {
 	struct msm_otg *motg = the_msm_otg;
 
-	printk("msm_otg ext chg open\n");
+	pr_debug("msm_otg ext chg open\n");
 	msm_otg_dbg_log_event(&motg->phy, "EXT CHG: OPEN",
 			motg->inputs, motg->phy.state);
 
@@ -5978,7 +6726,7 @@ msm_otg_ext_chg_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			ret = -EFAULT;
 			break;
 		}
-		printk("%s: LPM block request %d\n", __func__, val);
+		pr_debug("%s: LPM block request %d\n", __func__, val);
 		msm_otg_dbg_log_event(&motg->phy, "LPM BLOCK REQ", val, 0);
 		if (val) { /* block LPM */
 			if (motg->chg_type == USB_DCP_CHARGER) {
@@ -6032,9 +6780,9 @@ msm_otg_ext_chg_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		msm_otg_dbg_log_event(&motg->phy, "EXT CHG: VOL REQ", cmd, val);
 
 		if (val == USB_REQUEST_5V)
-			printk("%s:voting 5V voltage request\n", __func__);
+			pr_debug("%s:voting 5V voltage request\n", __func__);
 		else if (val == USB_REQUEST_9V)
-			printk("%s:voting 9V voltage request\n", __func__);
+			pr_debug("%s:voting 9V voltage request\n", __func__);
 		break;
 	case MSM_USB_EXT_CHG_RESULT:
 		if (get_user(val, (int __user *)arg)) {
@@ -6045,9 +6793,9 @@ msm_otg_ext_chg_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		msm_otg_dbg_log_event(&motg->phy, "EXT CHG: VOL REQ", cmd, val);
 
 		if (!val)
-			printk("%s:voltage request successful\n", __func__);
+			pr_debug("%s:voltage request successful\n", __func__);
 		else
-			printk("%s:voltage request failed\n", __func__);
+			pr_debug("%s:voltage request failed\n", __func__);
 		break;
 	case MSM_USB_EXT_CHG_TYPE:
 		if (get_user(val, (int __user *)arg)) {
@@ -6058,9 +6806,9 @@ msm_otg_ext_chg_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		msm_otg_dbg_log_event(&motg->phy, "EXT CHG: VOL REQ", cmd, val);
 
 		if (val)
-			printk("%s:charger is external charger\n", __func__);
+			pr_debug("%s:charger is external charger\n", __func__);
 		else
-			printk("%s:charger is not ext charger\n", __func__);
+			pr_debug("%s:charger is not ext charger\n", __func__);
 		break;
 	default:
 		ret = -EINVAL;
@@ -6095,7 +6843,7 @@ static int msm_otg_ext_chg_release(struct inode *inode, struct file *file)
 {
 	struct msm_otg *motg = file->private_data;
 
-	printk("msm_otg ext chg release\n");
+	pr_debug("msm_otg ext chg release\n");
 	msm_otg_dbg_log_event(&motg->phy, "EXT CHG: RELEASE",
 			motg->inputs, motg->phy.state);
 
@@ -6119,7 +6867,7 @@ static int msm_otg_setup_ext_chg_cdev(struct msm_otg *motg)
 	if (motg->pdata->enable_sec_phy || motg->pdata->mode == USB_HOST ||
 			motg->pdata->otg_control != OTG_PMIC_CONTROL ||
 			psy != &motg->usb_psy) {
-		printk("usb ext chg is not supported by msm otg\n");
+		pr_debug("usb ext chg is not supported by msm otg\n");
 		return -ENODEV;
 	}
 
@@ -6152,7 +6900,7 @@ static int msm_otg_setup_ext_chg_cdev(struct msm_otg *motg)
 	}
 
 	init_completion(&motg->ext_chg_wait);
-	printk("msm otg ext chg cdev setup success\n");
+	pr_debug("msm otg ext chg cdev setup success\n");
 	return 0;
 
 del_cdev:
@@ -6265,7 +7013,7 @@ struct msm_otg_platform_data *msm_otg_dt_to_pdata(struct platform_device *pdev)
 	pdata->usb_id_gpio =
 			of_get_named_gpio(node, "qcom,usbid-gpio", 0);
 	if (pdata->usb_id_gpio < 0)
-		printk("usb_id_gpio is not available\n");
+		pr_debug("usb_id_gpio is not available\n");
 
 	pdata->l1_supported = of_property_read_bool(node,
 				"qcom,hsusb-l1-supported");
@@ -6301,10 +7049,33 @@ static int msm_otg_probe(struct platform_device *pdev)
 	struct msm_otg_platform_data *pdata;
 	void __iomem *tcsr;
 	int id_irq = 0;
+//ASUS_BSP+++ ShowWang "set USB controller mode"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	struct pinctrl_state *set_state_tps2546_ctl3;
+	int rev_tps2546_ctl3;
+	struct pinctrl_state *set_state_tps2546_status;
+	int rev_tps2546_status;
+	struct pinctrl_state *set_state_tps2546_fault;
+	int rev_tps2546_fault;
+	int status_irq = 0;
+#endif
+//ASUS_BSP--- ShowWang "set USB controller mode"
 
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+	struct pinctrl_state *set_state;
+	int rev;
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
 //ASUS_BSP+++ Landice "[ZE500KL][USBH] Enable/Disable VBUS output on ID events"
 	g_charger_state = -1;
 //ASUS_BSP--- Landice "[ZE500KL][USBH] Enable/Disable VBUS output on ID events"
+
+//ASUS_BSP+++ ShowWang "read HW ID"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+        HW_ID = get_zc550kl_pcb_rev();
+#endif
+//ASUS_BSP--- ShowWang "read HW ID"
 
 	dev_info(&pdev->dev, "msm_otg probe\n");
 	motg = kzalloc(sizeof(struct msm_otg), GFP_KERNEL);
@@ -6363,7 +7134,7 @@ static int msm_otg_probe(struct platform_device *pdev)
 		if (ret == -EPROBE_DEFER)
 			goto put_pclk;
 	}
-
+//ASUS_BSP+++ ShowWang "set otg current as requirement"
 	/*
 	 * On few platforms USB PHY is fed with sleep clk.
 	 * Hence don't fail probe.
@@ -6517,7 +7288,7 @@ static int msm_otg_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto devote_bus_bw;
 	}
-	dev_info(&pdev->dev, "OTG regs = %pK\n", motg->regs);
+	dev_info(&pdev->dev, "OTG regs = %p\n", motg->regs);
 
 	if (pdata->enable_sec_phy) {
 		res = platform_get_resource_byname(pdev,
@@ -6658,7 +7429,129 @@ static int msm_otg_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "Target does not use pinctrl\n");
 		motg->phy_pinctrl = NULL;
 	}
+//ASUS_BSP+++ ShowWang "set USB controller mode"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	else {
+		if (HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) {
+			set_state_tps2546_ctl3 = pinctrl_lookup_state(motg->phy_pinctrl , "tps2546_ctl3");
+			if (IS_ERR(set_state_tps2546_ctl3)) {
+				pr_err("cannot get phy pinctrl tps2546_ctl3 state\n");
+			}
+			else {
+				rev_tps2546_ctl3 = pinctrl_select_state(motg->phy_pinctrl , set_state_tps2546_ctl3);
+				printk("%s: set_state_tps2546_ctl3 = %d\n", __func__, ret);
+			}
 
+			set_state_tps2546_status = pinctrl_lookup_state(motg->phy_pinctrl , "tps2546_status");
+			if (IS_ERR(set_state_tps2546_status)) {
+				pr_err("cannot get phy pinctrl tps2546_status state\n");
+			}
+			else {
+				rev_tps2546_status = pinctrl_select_state(motg->phy_pinctrl , set_state_tps2546_status);
+				printk("%s: set_state_tps2546_status = %d\n", __func__, ret);
+			}
+
+			set_state_tps2546_fault = pinctrl_lookup_state(motg->phy_pinctrl , "tps2546_fault");
+			if (IS_ERR(set_state_tps2546_fault)) {
+				pr_err("cannot get phy pinctrl tps2546_fault state\n");
+			}
+			else {
+				rev_tps2546_fault = pinctrl_select_state(motg->phy_pinctrl , set_state_tps2546_fault);
+				printk("%s: set_state_tps2546_fault = %d\n", __func__, ret);
+			}
+		}
+	}
+
+	if (HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) {
+		pdata->tps2546_ctl3_gpio = of_get_named_gpio(pdev->dev.of_node, "qcom,tps2546_ctl3_gpio", 0);
+		if (pdata->tps2546_ctl3_gpio < 0) {
+			pr_err("tps2546_ctl3_gpio is not available\n");
+		}	else {
+			printk("[usb_otg] tps2546_ctl3_gpio is  %d\n", gpio_get_value(pdata->tps2546_ctl3_gpio));
+		}
+
+		ret = gpio_request_one(pdata->tps2546_ctl3_gpio, GPIOF_OUT_INIT_HIGH, "tps2546_ctl3_gpio");
+		if (ret < 0) {
+			printk("%s: request tps2546_ctl3_gpio fail!\n", __func__);
+		}
+
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+		if(g_CHG_mode !=2) {
+			asus_otg_chargetype_set(1);
+		}
+#endif
+
+		pdata->tps2546_status_gpio = of_get_named_gpio(pdev->dev.of_node, "qcom,tps2546_status_gpio", 0);
+		if (pdata->tps2546_status_gpio < 0) {
+			pr_err("tps2546_status_gpio is not available\n");
+		}	else {
+			printk("[usb_otg] tps2546_status_gpio is  %d\n", gpio_get_value(pdata->tps2546_status_gpio));
+		}
+
+		ret = gpio_request_one(pdata->tps2546_status_gpio, GPIOF_IN, "tps2546_status_gpio");
+		if (ret < 0) {
+			printk("%s: request tps2546_status_gpio fail!\n", __func__);
+		}
+
+		pdata->tps2546_fault_gpio = of_get_named_gpio(pdev->dev.of_node, "qcom,tps2546_fault_gpio", 0);
+		if (pdata->tps2546_fault_gpio < 0) {
+			pr_err("tps2546_fault_gpio is not available\n");
+		}	else {
+			printk("[usb_otg] tps2546_fault_gpio is  %d\n", gpio_get_value(pdata->tps2546_fault_gpio));
+		}
+
+		ret = gpio_request_one(pdata->tps2546_fault_gpio, GPIOF_IN, "tps2546_fault_gpio");
+		if (ret < 0) {
+			printk("%s: request tps2546_fault_gpio fail!\n", __func__);
+		}
+
+//ASUS_BSP+++ ShowWang "set USB status gpio irq"
+		status_irq = gpio_to_irq(pdata->tps2546_status_gpio);
+		if (status_irq) {
+			ret = request_irq(status_irq,
+					  asus_otg_status_irq,
+					  IRQF_TRIGGER_RISING |
+					  IRQF_TRIGGER_FALLING,
+					  "msm_otg", motg);
+			if (ret) {
+				dev_err(&pdev->dev, "request irq failed for tps2546_status\n");
+				goto remove_phy;
+			}
+		} else {
+			ret = -ENODEV;
+			dev_err(&pdev->dev, "tps2546_status IRQ doesn't exist\n");
+			goto remove_phy;
+		}
+//ASUS_BSP--- ShowWang "set USB status gpio irq"
+}
+#endif
+//ASUS_BSP--- ShowWang "set USB controller mode"
+#if defined(CONFIG_ASUS_ZC550KL8916_PROJECT)
+	else {
+		set_state = pinctrl_lookup_state(motg->phy_pinctrl , "new_pcb");
+		if (IS_ERR(set_state)) {
+			pr_err("cannot get phy pinctrl new pcb state\n");
+		}
+		else {
+			rev = pinctrl_select_state(motg->phy_pinctrl , set_state);
+			printk("%s: pinctrl_select_state = %d\n", __func__, ret);
+		}
+	}
+
+	NEW_PCB = of_get_named_gpio(pdev->dev.of_node, "qcom,new_pcb_gpio", 0);
+	if (NEW_PCB < 0)
+		pr_err("new_pcb_gpio is not available\n");
+	else {
+		printk("[usb_otg] new_pcb_gpio is  %d\n", gpio_get_value(NEW_PCB));
+	}
+
+	ret = gpio_request_one(NEW_PCB, GPIOF_IN, "new_pcb_gpio");
+	if (ret < 0)
+	{
+		printk("%s: request new_pcb_gpio fail!\n", __FUNCTION__);
+	}
+#endif
+//ASUS_BSP--- ShowWang "set otg current as requirement"
 	if (pdata->mhl_enable) {
 		mhl_usb_hs_switch = devm_regulator_get(motg->phy.dev,
 							"mhl_usb_hs_switch");
@@ -6698,6 +7591,11 @@ static int msm_otg_probe(struct platform_device *pdev)
 	INIT_WORK(&asus_chg_usb_work, asus_otg_chg_usb_work);
 	INIT_DELAYED_WORK(&asus_chg_unknown_delay_work, asus_otg_chg_unknown_delay_work);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	INIT_DELAYED_WORK(&asus_check_disable_5V_work, asus_otg_check_disable_5V_work);
+#endif
+//ASUS_BSP---ShowWang "Enable otg poweron switching"
 
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
 	wake_lock_init(&early_suspend_wlock, WAKE_LOCK_SUSPEND, "asus_otg_early_suspend_wlock");
@@ -6733,22 +7631,22 @@ static int msm_otg_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "request irq failed\n");
 		goto destroy_wlock;
 	}
-    /*
+
 	motg->phy_irq = platform_get_irq_byname(pdev, "phy_irq");
 	if (motg->phy_irq < 0) {
-		printk("phy_irq is not present\n");
+		dev_dbg(&pdev->dev, "phy_irq is not present\n");
 		motg->phy_irq = 0;
 	} else {
-		printk("get phy_irq \n");
-		 clear all interrupts before enabling the IRQ 
+
+		/* clear all interrupts before enabling the IRQ */
 		writeb_relaxed(0xFF, USB2_PHY_USB_PHY_INTERRUPT_CLEAR0);
 		writeb_relaxed(0xFF, USB2_PHY_USB_PHY_INTERRUPT_CLEAR1);
 
 		writeb_relaxed(0x1, USB2_PHY_USB_PHY_IRQ_CMD);
-		*
+		/*
 		 * Databook says 200 usec delay is required for
 		 * clearing the interrupts.
-		 *
+		 */
 		udelay(200);
 		writeb_relaxed(0x0, USB2_PHY_USB_PHY_IRQ_CMD);
 
@@ -6759,15 +7657,13 @@ static int msm_otg_probe(struct platform_device *pdev)
 			goto free_irq;
 		}
 	}
-	*/
 
 	if (motg->async_irq) {
 		ret = request_irq(motg->async_irq, msm_otg_irq,
 					IRQF_TRIGGER_RISING, "msm_otg", motg);
 		if (ret) {
 			dev_err(&pdev->dev, "request irq failed (ASYNC INT)\n");
-			goto free_irq;
-//			goto free_phy_irq;
+			goto free_phy_irq;
 		}
 		disable_irq(motg->async_irq);
 	}
@@ -6805,9 +7701,8 @@ static int msm_otg_probe(struct platform_device *pdev)
 	}
 
 	if (motg->pdata->mode == USB_OTG &&
-		motg->pdata->otg_control == OTG_PMIC_CONTROL) {
-/*		motg->pdata->otg_control == OTG_PMIC_CONTROL &&
-		!motg->phy_irq) {*/
+		motg->pdata->otg_control == OTG_PMIC_CONTROL &&
+		!motg->phy_irq) {
 
 		if (gpio_is_valid(motg->pdata->usb_id_gpio)) {
 			/* usb_id_gpio request */
@@ -6825,16 +7720,17 @@ static int msm_otg_probe(struct platform_device *pdev)
 			 * for device mode In this case HUB should be gone
 			 * only once out of reset at the boot time and after
 			 * that always stay on*/
-			if (gpio_is_valid(motg->pdata->hub_reset_gpio)){
+			if (gpio_is_valid(motg->pdata->hub_reset_gpio)) {
 				ret = devm_gpio_request(&pdev->dev,
 						motg->pdata->hub_reset_gpio,
-						"qcom,hub-reset-gpio");}
+						"qcom,hub-reset-gpio");
 				if (ret < 0) {
 					dev_err(&pdev->dev, "gpio req failed for hub reset\n");
 					goto remove_phy;
 				}
 				gpio_direction_output(
 					motg->pdata->hub_reset_gpio, 1);
+				}
 
 			if (gpio_is_valid(motg->pdata->switch_sel_gpio)) {
 				ret = devm_gpio_request(&pdev->dev,
@@ -6898,8 +7794,7 @@ static int msm_otg_probe(struct platform_device *pdev)
 			 motg->pdata->pmic_id_irq || motg->ext_id_irq))
 		motg->caps = ALLOW_PHY_POWER_COLLAPSE | ALLOW_PHY_RETENTION;
 
-	if (motg->pdata->otg_control == OTG_PHY_CONTROL)
-//	if (motg->pdata->otg_control == OTG_PHY_CONTROL || motg->phy_irq)
+	if (motg->pdata->otg_control == OTG_PHY_CONTROL || motg->phy_irq)
 		motg->caps = ALLOW_PHY_RETENTION | ALLOW_PHY_REGULATORS_LPM;
 
 	if (motg->pdata->mpm_dpshv_int || motg->pdata->mpm_dmshv_int)
@@ -6973,6 +7868,16 @@ static int msm_otg_probe(struct platform_device *pdev)
 	register_pm_notifier(&motg->pm_notify);
 	msm_otg_dbg_log_event(phy, "OTG PROBE", motg->caps, motg->lpm_flags);
 
+//ASUS_BSP+++ ShowWang "send otg id event to framework"
+#if defined(CONFIG_ASUS_ZC550KL8939_PROJECT)
+	if (HW_ID == ZC550KL_8939_ER || HW_ID == ZC550KL_8939_PR) {
+		AsusOtgIdNotifyInitialize();
+		//ASUS_BSP+++ ShowWang "send otg status event to framework"
+		AsusOtgStatusNotifyInitialize();
+		//ASUS_BSP--- ShowWang "send otg status event to framework"
+	}
+#endif
+//ASUS_BSP--- ShowWang "send otg id event to framework"
 	return 0;
 
 remove_cdev:
@@ -6989,9 +7894,9 @@ remove_phy:
 free_async_irq:
 	if (motg->async_irq)
 		free_irq(motg->async_irq, motg);
-/*free_phy_irq:
+free_phy_irq:
 	if (motg->phy_irq)
-		free_irq(motg->phy_irq, motg);*/
+		free_irq(motg->phy_irq, motg);
 free_irq:
 	free_irq(motg->irq, motg);
 destroy_wlock:
@@ -7071,21 +7976,23 @@ static int msm_otg_remove(struct platform_device *pdev)
 	if (psy)
 		power_supply_unregister(psy);
 	msm_otg_mhl_register_callback(motg, NULL);
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
-       cancel_delayed_work_sync(&early_suspend_delay_work);
-       cancel_work_sync(&late_resume_work);
-       destroy_workqueue(early_suspend_delay_wq);
-       wake_lock_destroy(&early_suspend_wlock);
+	cancel_delayed_work_sync(&early_suspend_delay_work);
+	cancel_work_sync(&late_resume_work);
+	destroy_workqueue(early_suspend_delay_wq);
+	wake_lock_destroy(&early_suspend_wlock);
 #if defined(CONFIG_FB)
-       fb_unregister_client(&fb_notif);
+	fb_unregister_client(&fb_notif);
 #endif
 //ASUS_BSP--- Landice "[ZE500KL][USBH][Spec] Register early suspend notification for none mode switch"
+
 	msm_otg_debugfs_cleanup();
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
-       mutex_destroy(&msm_otg_mutex);
+	mutex_destroy(&msm_otg_mutex);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][fix] Add mutex to protect suspend/resume function"
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Enable manual mode switching"
-       asus_otg_procfs_cleanup();
+	asus_otg_procfs_cleanup();
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Enable manual mode switching"
 	cancel_delayed_work_sync(&motg->chg_work);
 	cancel_delayed_work_sync(&motg->id_status_work);
@@ -7093,8 +8000,13 @@ static int msm_otg_remove(struct platform_device *pdev)
 	cancel_work_sync(&motg->sm_work);
 	destroy_workqueue(motg->otg_wq);
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
-       cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
+	cancel_delayed_work_sync(&asus_chg_unknown_delay_work);
 //ASUS_BSP--- Landice "[ZE500KL][USBH][NA][Spec] Set asus charger upon charger type detection"
+//ASUS_BSP+++ ShowWang "Enable otg poweron switching"
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+	cancel_delayed_work_sync(&asus_check_disable_5V_work);
+#endif
+//ASUS_BSP---ShowWang "Enable otg poweron switching"
 
 	pm_runtime_resume(&pdev->dev);
 
@@ -7103,8 +8015,8 @@ static int msm_otg_remove(struct platform_device *pdev)
 	wake_lock_destroy(&motg->wlock);
 
 	msm_hsusb_mhl_switch_enable(motg, 0);
-/*	if (motg->phy_irq)
-		free_irq(motg->phy_irq, motg);*/
+	if (motg->phy_irq)
+		free_irq(motg->phy_irq, motg);
 	if (motg->pdata->pmic_id_irq)
 		free_irq(motg->pdata->pmic_id_irq, motg);
 	usb_remove_phy(phy);
@@ -7167,7 +8079,6 @@ static int msm_otg_remove(struct platform_device *pdev)
 		msm_otg_bus_vote(motg, USB_NO_PERF_VOTE);
 		msm_bus_scale_unregister_client(motg->bus_perf_client);
 	}
-
 	return 0;
 }
 
@@ -7247,11 +8158,14 @@ static int msm_otg_pm_suspend(struct device *dev)
 	msm_otg_dbg_log_event(&motg->phy, "PM SUSPEND START",
 			get_pm_runtime_counter(dev),
 			atomic_read(&motg->pm_suspended));
+
 //ASUS_BSP+++ Landice "[ZE500KL][USBH][TT332603][other] Add log to check if TT332603 still happens"
-       if (!atomic_read(&motg->in_lpm)) {
-               dev_err(dev, "Error - suspend out of lpm!\n");
-               //return -EBUSY;
-       }
+	if (!atomic_read(&motg->in_lpm)) {
+		dev_err(dev, "Error - suspend out of lpm!\n");
+#ifdef CONFIG_ASUS_ZC550KL_PROJECT
+		return -EBUSY;
+#endif
+	}
 //ASUS_BSP--- Landice "[ZE500KL][USBH][TT332603][other] Add log to check if TT332603 still happens"
 
 	atomic_set(&motg->pm_suspended, 1);
