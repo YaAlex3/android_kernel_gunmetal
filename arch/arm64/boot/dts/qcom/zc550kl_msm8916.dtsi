@@ -337,8 +337,7 @@
 			<  998400000 5>,
 			< 1094400000 6>,
 			< 1152000000 7>,
-			< 1209600000 8>,
-			< 1363200000 9>;
+			< 1209600000 8>;
 
 		qcom,speed1-bin-v0 =
 			<          0 0>,
@@ -348,9 +347,7 @@
 			<  800000000 4>,
 			<  998400000 5>,
 			< 1094400000 6>,
-			< 1152000000 7>,
-			< 1209600000 8>,
-			< 1363200000 9>;
+			< 1152000000 7>;
 
 		qcom,speed3-bin-v0 =
 			<          0 0>,
@@ -372,8 +369,7 @@
 			<  998400000 5>,
 			< 1094400000 6>,
 			< 1152000000 7>,
-			< 1209600000 8>,
-			< 1363200000 9>;
+			< 1209600000 8>;
 
 		qcom,speed2-bin-v1 =
 			<          0 0>,
@@ -1691,12 +1687,6 @@
 			qcom,levels = <533330 800000 998400>;
 			qcom,freq-req;
 		};
-	};
-
-	qcom,msm-thermal-simple {
-		compatible = "qcom,msm-thermal-simple";
-		qcom,thermal-vadc = <&pm8916_vadc>;
-		qcom,adc-channel = <54>; /* dev_harsh1998: Use pa_therm0 for msm8916 or simply 0x36 to decimal */
 	};
 
 	qcom,memshare {
