@@ -138,13 +138,22 @@ static char *ramdisk_execute_command;
 
 //ASUS_BSP Austin_T : add for kernel charger mode. +++
 bool g_Charger_mode = false;
-
+int g_CHG_mode = 0;
 static int set_charger_mode(char *str)
 {
-    if ( strcmp("charger", str) == 0 )
+    if ( strncmp("charger", str, 7) == 0 )
+    {
         g_Charger_mode = true;
+        g_CHG_mode = 1;
+	}
     else
+    {
         g_Charger_mode = false;
+        if( strcmp("bank", str) == 0 )
+            g_CHG_mode = 2;
+         else
+           g_CHG_mode = 0;
+	}
 
     printk("g_Charger_mode = %d\n", g_Charger_mode);
     return 0;

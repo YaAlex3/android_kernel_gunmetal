@@ -1276,7 +1276,7 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 	if (
 #ifndef CONFIG_LEDS_TRIGGER_BACKLIGHT
 	    (((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
-		|| !mfd->allow_bl_updated) && !IS_CALIB_MODE_BL(mfd)) ||
+		|| !mfd->allow_bl_update) && !IS_CALIB_MODE_BL(mfd)) ||
 #endif
 		mfd->panel_info->cont_splash_enabled) {
 		if((0 == temp) &&(0 == strcmp(boot_to_charger_mode,"charger"))
