@@ -52,7 +52,6 @@
 #include <linux/msm_iommu_domains.h>
 
 #include "mdss_fb.h"
-#include "mdss_dsi.h"
 #include "mdss_mdp_splash_logo.h"
 #include "mdss_mdp.h"
 
@@ -70,24 +69,21 @@
 
 #define BLANK_FLAG_LP	FB_BLANK_VSYNC_SUSPEND
 #define BLANK_FLAG_ULP	FB_BLANK_NORMAL
-
-#define MDSS_BRIGHT_TO_BL_DIMMER(out, v) do {\
-					out = ((v) * (v) * 255  / 4095 + (v) * (255 - (v)) / 32);\
-					} while (0)
-#define MDSS_BRIGHT_TO_BL_DIMMER_LOW(out, v) do {\
-					out = (((v) - 2) * 255 / 250);\
-					} while (0)
-
-bool backlight_dimmer = false;
-module_param(backlight_dimmer, bool, 0755);
-bool backlight_low_dimmer = false;
-module_param(backlight_low_dimmer, bool, 0755);
-
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+//+++ ASUS_BSP: Louis
+#define COMMIT_FRAMES_COUNT 5
+int display_commit_cnt;
+extern char bl_cmd[2];
+extern char dimming_cmd[2];
+#endif
+extern void set_tcon_cmd(char*, short);
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+extern int g_dcs_bl_value;
+int g_charger_cnt = 2;
+//--- ASUS_BSP: Louis
+#endif
 static struct fb_info *fbi_list[MAX_FBI_LIST];
 static int fbi_list_index;
-
-extern char boot_to_charger_mode[64];
-extern char asus_lcd_id[2];
 
 static u32 mdss_fb_pseudo_palette[16] = {
 	0x00000000, 0xffffffff, 0xffffffff, 0xffffffff,
@@ -265,21 +261,10 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 	if (value > mfd->panel_info->brightness_max)
 		value = mfd->panel_info->brightness_max;
 
-	if (backlight_dimmer) {
-		if (backlight_low_dimmer) {
-			if (value < 3)
-				bl_lvl = 1;
-			else
-				MDSS_BRIGHT_TO_BL_DIMMER_LOW(bl_lvl, value);
-		} else {
-			MDSS_BRIGHT_TO_BL_DIMMER(bl_lvl, value);
-		}
-	} else {
-		/* This maps android backlight level 0 to 255 into
-		   driver backlight level 0 to bl_max with rounding */
-		MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
-					mfd->panel_info->brightness_max);
-	}
+	/* This maps android backlight level 0 to 255 into
+	   driver backlight level 0 to bl_max with rounding */
+	MDSS_BRIGHT_TO_BL(bl_lvl, value, mfd->panel_info->bl_max,
+				mfd->panel_info->brightness_max);
 
 	if (!bl_lvl && value)
 		bl_lvl = 1;
@@ -294,7 +279,7 @@ static void mdss_fb_set_bl_brightness(struct led_classdev *led_cdev,
 
 static struct led_classdev backlight_led = {
 	.name           = "lcd-backlight",
-	.brightness     = MDSS_MAX_BL_BRIGHTNESS / 2,
+	.brightness     = MDSS_MAX_BL_BRIGHTNESS,
 	.brightness_set = mdss_fb_set_bl_brightness,
 	.max_brightness = MDSS_MAX_BL_BRIGHTNESS,
 };
@@ -748,7 +733,7 @@ static ssize_t mdss_set_rgb(struct device *dev,
 	if (b < 0 || b > 32768)
 		return -EINVAL;
 
-	pr_info("r=%d g=%d b=%d\n", r, g, b);
+	pr_info("%s: r=%d g=%d b=%d", __func__, r, g, b);
 
 	memset(&pcc_cfg, 0, sizeof(struct mdp_pcc_cfg_data));
 
@@ -823,7 +808,7 @@ static void mdss_fb_remove_sysfs(struct msm_fb_data_type *mfd)
 {
 	sysfs_remove_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 }
-int fb_shutdown  = 0;
+
 static void mdss_fb_shutdown(struct platform_device *pdev)
 {
 	struct msm_fb_data_type *mfd = platform_get_drvdata(pdev);
@@ -832,7 +817,6 @@ static void mdss_fb_shutdown(struct platform_device *pdev)
 
 	pr_info("[Display] %s: fb%d from %s \n", __func__, mfd->index, task->comm);
 	/* ASUS_BSP: Louis --	*/
-	fb_shutdown = 1;
 	mfd->shutdown_pending = true;
 	lock_fb_info(mfd->fbi);
 	mdss_fb_release_all(mfd->fbi, true);
@@ -881,18 +865,11 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	mfd->mdp_fb_page_protection = MDP_FB_PAGE_PROTECTION_WRITECOMBINE;
 
 	mfd->ext_ad_ctrl = -1;
-	if (mfd->panel_info && mfd->panel_info->brightness_max > 0)
-		MDSS_BRIGHT_TO_BL(mfd->bl_level,
-			backlight_led.brightness, mfd->panel_info->bl_max,
-					mfd->panel_info->brightness_max);
-	else
-		mfd->bl_level = 0;
-
+	mfd->bl_level = 0;
 	mfd->bl_scale = 1024;
 	mfd->bl_min_lvl = 30;
 	mfd->ad_bl_level = 0;
 	mfd->fb_imgType = MDP_RGBA_8888;
-	mfd->calib_mode_bl = 0;
 
 	if (mfd->panel.type == MIPI_VIDEO_PANEL ||
 				mfd->panel.type == MIPI_CMD_PANEL) {
@@ -1262,7 +1239,6 @@ static void mdss_fb_scale_bl(struct msm_fb_data_type *mfd, u32 *bl_lvl)
 void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 {
 	struct mdss_panel_data *pdata;
-	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	u32 temp = bkl_lvl;
 	bool bl_notify_needed = false;
 
@@ -1273,22 +1249,9 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 		return;
 	}
 
-	if (
-#ifndef CONFIG_LEDS_TRIGGER_BACKLIGHT
-	    (((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
+	if ((((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
 		|| !mfd->allow_bl_update) && !IS_CALIB_MODE_BL(mfd)) ||
-#endif
 		mfd->panel_info->cont_splash_enabled) {
-		if((0 == temp) &&(0 == strcmp(boot_to_charger_mode,"charger"))
-			&& ((asus_lcd_id[0] == '0') || (asus_lcd_id[0] == '1')))
-		{
-		    pr_debug("%s: turn off backlight for 550 hd panel\n",__FUNCTION__);
-			pdata = dev_get_platdata(&mfd->pdev->dev);
-			ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
-				panel_data);
-			if ((pdata) && (ctrl_pdata))
-				gpio_set_value((ctrl_pdata->bklt_en_gpio), 0);
-		}
 		mfd->unset_bl_level = bkl_lvl;
 		return;
 	} else {
@@ -1623,6 +1586,15 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		req_power_state = MDSS_PANEL_POWER_OFF;
 		pr_debug("blank powerdown called\n");
 		ret = mdss_fb_blank_blank(mfd, req_power_state);
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+            //+++ ASUS_BSP: Louis
+            if (display_commit_cnt == 0)
+                display_commit_cnt = COMMIT_FRAMES_COUNT;
+            if (g_charger_cnt == 0)
+                g_charger_cnt = 2;
+            //--- ASUS_BSP: Louis
+#endif
+
 		break;
 	}
 
@@ -2449,20 +2421,13 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 	int pid = current->tgid;
 	bool unknown_pid = true, release_needed = false;
 	struct task_struct *task = current->group_leader;
-	/* ASUS_BSP: Holt ++   */
-	static int unexpected_fb_release = 5;
+
 	if (!mfd->ref_cnt) {
-		if(unexpected_fb_release > 0)
-		{	
-			unexpected_fb_release--;
-			pr_info("try to close unopened fb %d! from %s\n", mfd->index,
+		pr_info("try to close unopened fb %d! from %s\n", mfd->index,
 			task->comm);
-			return -EINVAL;
-		} else {
-			return 0;
-		}
+		return -EINVAL;
 	}
-	/* ASUS_BSP: Holt --   */
+
 	if (!wait_event_timeout(mfd->ioctl_q,
 		!atomic_read(&mfd->ioctl_ref_cnt) || !release_all,
 		msecs_to_jiffies(1000)))
@@ -2577,6 +2542,12 @@ static int mdss_fb_release_all(struct fb_info *info, bool release_all)
 
 static int mdss_fb_release(struct fb_info *info, int user)
 {
+	//ASUS_BSP: Louis++, block once init.c already shutdown device
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+	if (mfd->shutdown_pending) {
+		return -EPERM;
+	}
+	//ASUS_BSP: Louis--
 	return mdss_fb_release_all(info, false);
 }
 
@@ -3035,8 +3006,8 @@ static int __mdss_fb_display_thread(void *data)
 		wake_up_all(&mfd->idle_wait_q);
 	}
 
+	mdss_fb_release_kickoff(mfd);
 	atomic_set(&mfd->commits_pending, 0);
-	atomic_set(&mfd->kickoff_pending, 0);
 	wake_up_all(&mfd->idle_wait_q);
 
 	return ret;
@@ -3226,7 +3197,15 @@ static int mdss_fb_set_par(struct fb_info *info)
 		mdss_fb_blank_sub(FB_BLANK_UNBLANK, info, mfd->op_enable);
 		mfd->panel_reconfig = false;
 	}
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+    if(g_charger_cnt == 1) {
+        bl_cmd[1] = 100;
+        set_tcon_cmd(bl_cmd,ARRAY_SIZE(bl_cmd));
+    }
 
+    if(g_charger_cnt > 0)
+        g_charger_cnt--;
+#endif
 	return ret;
 }
 
@@ -3511,6 +3490,21 @@ static int mdss_fb_display_commit(struct fb_info *info,
 		return ret;
 	}
 	ret = mdss_fb_pan_display_ex(info, &disp_commit);
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+	//+++ ASUS_BSP: Louis
+    if (display_commit_cnt > 0) {
+        if (display_commit_cnt == 4) {
+            bl_cmd[1] = g_dcs_bl_value;
+            set_tcon_cmd(bl_cmd, ARRAY_SIZE(bl_cmd));
+        }
+        if (display_commit_cnt == 1)
+            set_tcon_cmd(dimming_cmd, ARRAY_SIZE(dimming_cmd));
+
+        printk("fb%d dpc\n", info->node);
+        display_commit_cnt--;
+    }
+	//--- ASUS_BSP: Louis
+#endif
 	return ret;
 }
 
@@ -3627,6 +3621,7 @@ int mdss_fb_do_ioctl(struct fb_info *info, unsigned int cmd,
 	case MSMFB_DISPLAY_COMMIT:
 		ret = mdss_fb_display_commit(info, argp);
 		break;
+
 
 	case MSMFB_LPM_ENABLE:
 		ret = copy_from_user(&dsi_mode, argp, sizeof(dsi_mode));

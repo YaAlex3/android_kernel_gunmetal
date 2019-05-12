@@ -61,18 +61,9 @@ static void find_freq(struct devfreq_dev_profile *p, unsigned long *freq,
 static int dev_target(struct device *dev, unsigned long *freq, u32 flags)
 {
 	struct dev_data *d = dev_get_drvdata(dev);
-	unsigned long rfreq;
 
 	find_freq(&d->profile, freq, flags);
-
-	rfreq = clk_round_rate(d->clk, *freq * 1000);
-	if (IS_ERR_VALUE(rfreq)) {
-		dev_err(dev, "devfreq: Cannot find matching frequency for %lu\n",
-			*freq);
-		return rfreq;
-	}
-
-	return clk_set_rate(d->clk, rfreq);
+	return clk_set_rate(d->clk, *freq * 1000);
 }
 
 static int dev_get_cur_freq(struct device *dev, unsigned long *freq)

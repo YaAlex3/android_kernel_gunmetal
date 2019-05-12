@@ -830,7 +830,6 @@ static void mdss_dsi_link_clk_unprepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 	clk_unprepare(ctrl_pdata->byte_clk);
 	clk_unprepare(ctrl_pdata->esc_clk);
 }
-extern char asus_lcd_id[2];
 
 static void mdss_dsi_ulp_escclk_unprepare(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
@@ -866,18 +865,23 @@ error:
 
 static int mdss_dsi_link_clk_set_rate(struct mdss_dsi_ctrl_pdata *ctrl_pdata)
 {
-	u32 esc_clk_rate = 19200000;
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+    u32 esc_clk_rate;
 	int rc = 0;
 
+    if(g_asus_lcdID == ZE500KL_LCD_AUO)
+        esc_clk_rate = 19200000;
+    else
+        esc_clk_rate = 9600000;
+#else
+
+	u32 esc_clk_rate = 19200000;
+	int rc = 0;
+#endif
 	if (!ctrl_pdata) {
 		pr_err("%s: Invalid input data\n", __func__);
 		return -EINVAL;
 	}
-
-	if(asus_lcd_id[0]=='0'){
-		printk(KERN_EMERG "[DISPLAY] %s esc 9600000 for CPT\n",__func__);
-		esc_clk_rate = 9600000;
-		}
 
 	if (!ctrl_pdata->panel_data.panel_info.cont_splash_enabled) {
 		pr_debug("%s: Set clk rates: pclk=%d, byteclk=%d escclk=%d\n",
@@ -1368,7 +1372,7 @@ static int mdss_dsi_core_power_ctrl(struct mdss_dsi_ctrl_pdata *ctrl,
 		 * Phy and controller setup is needed if coming out of idle
 		 * power collapse with clamps enabled.
 		 */
-		if (ctrl->mmss_clamp) {
+        if (ctrl->mmss_clamp || !pdata->panel_info.cont_splash_enabled) {
 			mdss_dsi_phy_init(ctrl);
 			mdss_dsi_ctrl_setup(ctrl);
 		}

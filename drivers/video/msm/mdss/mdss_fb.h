@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -107,6 +107,13 @@ enum mdp_mmap_type {
 	MDP_FB_MMAP_ION_ALLOC,
 	MDP_FB_MMAP_PHYSICAL_ALLOC,
 };
+
+//ASUS_BSP: Louis ++
+struct uevent_type {
+	char *cmdstr;
+	char *ptr;
+};
+//ASUS_BSP: Louis --
 
 struct disp_info_type_suspend {
 	int op_enable;

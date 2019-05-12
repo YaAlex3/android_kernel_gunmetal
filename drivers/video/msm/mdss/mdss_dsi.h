@@ -56,9 +56,6 @@
 
 #define NONE_PANEL "none"
 
-/* KCAL SCREEN MODES by psndna88@xda */
-extern bool backlight_dimmer;
-
 enum {		/* mipi dsi panel */
 	DSI_VIDEO_MODE,
 	DSI_CMD_MODE,
@@ -204,8 +201,6 @@ enum dsi_pm_type {
 extern struct device dsi_dev;
 extern u32 dsi_irq;
 extern struct mdss_dsi_ctrl_pdata *ctrl_list[];
-extern int fb_shutdown;
-
 
 struct dsiphy_pll_divider_config {
 	u32 clk_rate;
@@ -423,8 +418,6 @@ struct mdss_dsi_ctrl_pdata {
 	int horizontal_idle_cnt;
 	struct panel_horizontal_idle *line_idle;
 	struct mdss_util_intf *mdss_util;
-
-	bool dfps_status;	/* dynamic refresh status */
 };
 
 struct dsi_status_data {

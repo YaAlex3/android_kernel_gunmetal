@@ -46,7 +46,7 @@
 #define MAX_UDELAY		2000
 
 /* Number of jiffies for a full thermal cycle */
-#define TH_HZ			(HZ/5)
+#define TH_HZ			20
 
 #define KGSL_MAX_BUSLEVELS	20
 
@@ -205,7 +205,7 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 	 * otherwise request bus level 0, off.
 	 */
 	if (on) {
-		buslevel = min_t(int, pwr->pwrlevels[0].bus_max,
+		buslevel = min_t(int, pwr->pwrlevels[0].bus_freq,
 				cur + pwr->bus_mod);
 		buslevel = max_t(int, buslevel, 1);
 	} else {
@@ -1023,11 +1023,6 @@ void kgsl_pwrctrl_busy_time(struct kgsl_device *device, u64 time, u64 busy)
 }
 EXPORT_SYMBOL(kgsl_pwrctrl_busy_time);
 
-/** Eliot_Chen@asus.com add for [Touch boost GPU] begin **/
-extern int asus_sb_enable;
-static int asus_sb_test = 0;
-/** Eliot_Chen@asus.com add for [Touch boost GPU] end **/
-
 void kgsl_pwrctrl_clk(struct kgsl_device *device, int state,
 					  int requested_state)
 {
@@ -1036,23 +1031,6 @@ void kgsl_pwrctrl_clk(struct kgsl_device *device, int state,
 
 	if (test_bit(KGSL_PWRFLAGS_CLK_ON, &pwr->ctrl_flags))
 		return;
-
-	/** Eliot_Chen@asus.com add for [Touch boost GPU] begin **/
-	if(asus_sb_enable == 1 && asus_sb_test == 0)
-	{
-		/* Eliot_Chen@asus.com modify for [Touch boost max GPU freq to 465MHz] */
-		pwr->min_pwrlevel = 1;
-		/* pwr->min_pwrlevel = 0; */
-		asus_sb_test = 1;
-		/*printk("Touch boost GPU enable\n");*/
-	}
-	else if(asus_sb_enable == 0 && asus_sb_test == 1)
-	{
-		pwr->min_pwrlevel = pwr->num_pwrlevels - 1;
-		asus_sb_test = 0;
-		/*printk("Touch boost GPU disable\n");*/
-	}
-	/** Eliot_Chen@asus.com add for [Touch boost GPU] end **/
 
 	if (state == KGSL_PWRFLAGS_OFF) {
 		if (test_and_clear_bit(KGSL_PWRFLAGS_CLK_ON,
@@ -1347,7 +1325,7 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 
 	pwr->power_flags = 0;
 
-	pwr->interval_timeout = msecs_to_jiffies(pdata->idle_timeout);
+	pwr->interval_timeout = pdata->idle_timeout;
 	pwr->strtstp_sleepwake = pdata->strtstp_sleepwake;
 
 	if (kgsl_property_read_u32(device, "qcom,pm-qos-active-latency",

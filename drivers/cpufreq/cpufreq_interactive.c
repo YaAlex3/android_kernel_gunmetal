@@ -75,7 +75,7 @@ static int migration_register_count;
 static struct mutex sched_lock;
 
 /* Target load.  Lower values result in higher CPU speeds. */
-#define DEFAULT_TARGET_LOAD 85
+#define DEFAULT_TARGET_LOAD 90
 static unsigned int default_target_loads[] = {DEFAULT_TARGET_LOAD};
 
 #define DEFAULT_TIMER_RATE (20 * USEC_PER_MSEC)
@@ -88,7 +88,7 @@ struct cpufreq_interactive_tunables {
 	/* Hi speed to bump to from lo speed when load burst (default max) */
 	unsigned int hispeed_freq;
 	/* Go to hi speed when CPU load at or above this value. */
-#define DEFAULT_GO_HISPEED_LOAD 90
+#define DEFAULT_GO_HISPEED_LOAD 99
 	unsigned long go_hispeed_load;
 	/* Target load. Lower values result in higher CPU speeds. */
 	spinlock_t target_loads_lock;
@@ -98,7 +98,7 @@ struct cpufreq_interactive_tunables {
 	 * The minimum amount of time to spend at a frequency before we can ramp
 	 * down.
 	 */
-#define DEFAULT_MIN_SAMPLE_TIME (40 * USEC_PER_MSEC)
+#define DEFAULT_MIN_SAMPLE_TIME (80 * USEC_PER_MSEC)
 	unsigned long min_sample_time;
 	/*
 	 * The sample rate of the timer used to increase frequency
@@ -147,11 +147,6 @@ struct cpufreq_interactive_tunables {
 static struct cpufreq_interactive_tunables *common_tunables;
 
 static struct attribute_group *get_sysfs_attr(void);
-
-static bool is_perfd(const char* c)
-{
-	return strncmp(c, "perfd", 36);
-}
 
 /* Round to starting jiffy of next evaluation window */
 static u64 round_to_nw_start(u64 jif,
@@ -796,7 +791,7 @@ static int cpufreq_interactive_notifier(
 	int cpu;
 	unsigned long flags;
 
-	if (val == CPUFREQ_PRECHANGE) {
+	if (val == CPUFREQ_POSTCHANGE) {
 		pcpu = &per_cpu(cpuinfo, freq->cpu);
 		if (!down_read_trylock(&pcpu->enable_sem))
 			return 0;
@@ -904,9 +899,6 @@ static ssize_t store_target_loads(
 	unsigned int *new_target_loads = NULL;
 	unsigned long flags;
 
-	if (!is_perfd(current->comm))
-		return 0;
-
 	new_target_loads = get_tokenized_data(buf, &ntokens);
 	if (IS_ERR(new_target_loads))
 		return PTR_RET(new_target_loads);
@@ -947,9 +939,6 @@ static ssize_t store_above_hispeed_delay(
 	unsigned int *new_above_hispeed_delay = NULL;
 	unsigned long flags;
 
-	if (!is_perfd(current->comm))
-		return 0;
-
 	new_above_hispeed_delay = get_tokenized_data(buf, &ntokens);
 	if (IS_ERR(new_above_hispeed_delay))
 		return PTR_RET(new_above_hispeed_delay);
@@ -976,12 +965,7 @@ static ssize_t store_hispeed_freq(struct cpufreq_interactive_tunables *tunables,
 	int ret;
 	long unsigned int val;
 
-
-	if (!is_perfd(current->comm))
-		return 0;
-
-	ret = kstrtoul(buf, 0, &val);
-
+	ret = strict_strtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	tunables->hispeed_freq = val;
@@ -1022,12 +1006,7 @@ static ssize_t store_go_hispeed_load(struct cpufreq_interactive_tunables
 	int ret;
 	unsigned long val;
 
-
-	if (!is_perfd(current->comm))
-		return 0;
-
-	ret = kstrtoul(buf, 0, &val);
-
+	ret = strict_strtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	tunables->go_hispeed_load = val;
@@ -1046,12 +1025,7 @@ static ssize_t store_min_sample_time(struct cpufreq_interactive_tunables
 	int ret;
 	unsigned long val;
 
-
-	if (!is_perfd(current->comm))
-		return 0;
-
-	ret = kstrtoul(buf, 0, &val);
-
+	ret = strict_strtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 	tunables->min_sample_time = val;
@@ -1072,12 +1046,7 @@ static ssize_t store_timer_rate(struct cpufreq_interactive_tunables *tunables,
 	struct cpufreq_interactive_tunables *t;
 	int cpu;
 
-
-	if (!is_perfd(current->comm))
-		return 0;
-
-	ret = kstrtoul(buf, 0, &val);
-
+	ret = strict_strtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
 
@@ -1111,9 +1080,6 @@ static ssize_t store_timer_slack(struct cpufreq_interactive_tunables *tunables,
 {
 	int ret;
 	unsigned long val;
-
-	if (!is_perfd(current->comm))
-		return 0;
 
 	ret = kstrtol(buf, 10, &val);
 	if (ret < 0)
@@ -1202,9 +1168,6 @@ static ssize_t store_io_is_busy(struct cpufreq_interactive_tunables *tunables,
 	unsigned long val;
 	struct cpufreq_interactive_tunables *t;
 	int cpu;
-
-	if (!is_perfd(current->comm))
-		return 0;
 
 	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
@@ -1297,9 +1260,6 @@ static ssize_t store_use_sched_load(
 	int ret;
 	unsigned long val;
 
-	if (!is_perfd(current->comm))
-		return 0;
-
 	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
 		return ret;
@@ -1335,9 +1295,6 @@ static ssize_t store_use_migration_notif(
 {
 	int ret;
 	unsigned long val;
-
-	if (!is_perfd(current->comm))
-		return 0;
 
 	ret = kstrtoul(buf, 0, &val);
 	if (ret < 0)
@@ -1686,8 +1643,6 @@ static int cpufreq_governor_interactive(struct cpufreq_policy *policy,
 		mutex_lock(&gov_lock);
 
 		freq_table = cpufreq_frequency_get_table(policy->cpu);
-		if (!tunables->hispeed_freq)
-			tunables->hispeed_freq = policy->max;
 
 		for_each_cpu(j, policy->cpus) {
 			pcpu = &per_cpu(cpuinfo, j);

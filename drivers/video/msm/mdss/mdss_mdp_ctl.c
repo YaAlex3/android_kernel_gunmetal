@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -153,6 +153,7 @@ static inline u32 mdss_mdp_align_latency_buf_bytes(
  * @ mdss_mdp_calc_latency_buf_bytes() -
  *                             Get the number of bytes for the
  *                             latency lines.
+ * @is_yuv - true if format is yuv
  * @is_bwc - true if BWC is enabled
  * @is_tile - true if it is Tile format
  * @src_w - source rectangle width
@@ -174,28 +175,42 @@ static inline u32 mdss_mdp_align_latency_buf_bytes(
  *		for the latency lines without any
  *		extra bytes.
  */
-u32 mdss_mdp_calc_latency_buf_bytes(bool is_bwc,
+u32 mdss_mdp_calc_latency_buf_bytes(bool is_yuv, bool is_bwc,
 	bool is_tile, u32 src_w, u32 bpp, bool use_latency_buf_percentage,
 	u32 smp_bytes)
 {
 	u32 latency_lines, latency_buf_bytes;
 	struct mdss_data_type *mdata = mdss_mdp_get_mdata();
 
-
-	if (is_bwc) {
-		latency_lines = 4;
-		latency_buf_bytes = src_w * bpp *
-			latency_lines;
-	} else if (is_tile) {
-		latency_lines = 8;
-		latency_buf_bytes = src_w * bpp *
-			latency_lines;
+	if (is_yuv) {
+		if (is_bwc) {
+			latency_lines = 4;
+			latency_buf_bytes = src_w * bpp *
+				latency_lines;
+		} else {
+			latency_lines = 2;
+			/* multiply * 2 for the two YUV planes */
+			latency_buf_bytes = mdss_mdp_align_latency_buf_bytes(
+				src_w * bpp * latency_lines,
+				use_latency_buf_percentage ?
+				mdata->latency_buff_per : 0, smp_bytes) * 2;
+		}
 	} else {
-		latency_lines = 2;
-		latency_buf_bytes = mdss_mdp_align_latency_buf_bytes(
-			src_w * bpp * latency_lines,
-			use_latency_buf_percentage ?
-			mdata->latency_buff_per : 0, smp_bytes);
+		if (is_tile) {
+			latency_lines = 8;
+			latency_buf_bytes = src_w * bpp *
+				latency_lines;
+		} else if (is_bwc) {
+			latency_lines = 4;
+			latency_buf_bytes = src_w * bpp *
+				latency_lines;
+		} else {
+			latency_lines = 2;
+			latency_buf_bytes = mdss_mdp_align_latency_buf_bytes(
+				src_w * bpp * latency_lines,
+				use_latency_buf_percentage ?
+				mdata->latency_buff_per : 0, smp_bytes);
+		}
 	}
 
 	return latency_buf_bytes;
@@ -227,8 +242,8 @@ static u32 mdss_mdp_perf_calc_pipe_prefill_video(struct mdss_mdp_prefill_params
 
 	prefill_bytes = prefill->ot_bytes;
 
-	latency_buf_bytes = mdss_mdp_calc_latency_buf_bytes(params->is_bwc,
-		params->is_tile, params->src_w, params->bpp,
+	latency_buf_bytes = mdss_mdp_calc_latency_buf_bytes(params->is_yuv,
+		params->is_bwc, params->is_tile, params->src_w, params->bpp,
 		true, params->smp_bytes);
 	prefill_bytes += latency_buf_bytes;
 	pr_debug("latency_buf_bytes bw_calc=%d actual=%d\n", latency_buf_bytes,
@@ -313,8 +328,8 @@ static u32 mdss_mdp_perf_calc_pipe_prefill_cmd(struct mdss_mdp_prefill_params
 		prefill_bytes += ot_bytes;
 
 		latency_buf_bytes = mdss_mdp_calc_latency_buf_bytes(
-			params->is_bwc, params->is_tile, params->src_w,
-			params->bpp, true, params->smp_bytes);
+			params->is_yuv, params->is_bwc, params->is_tile,
+			params->src_w, params->bpp, true, params->smp_bytes);
 		prefill_bytes += latency_buf_bytes;
 
 		if (params->is_yuv)
@@ -384,7 +399,7 @@ u32 mdss_mdp_perf_calc_smp_size(struct mdss_mdp_pipe *pipe,
 		return 0;
 
 	/* Get allocated or fixed smp bytes */
-	smp_bytes = mdss_mdp_smp_get_size(pipe, MAX_PLANES);
+	smp_bytes = mdss_mdp_smp_get_size(pipe);
 
 	/*
 	 * We need to calculate the SMP size for scenarios where
@@ -982,13 +997,15 @@ static int mdss_mdp_set_threshold_max_bandwidth(struct mdss_mdp_ctl *ctl)
 	pr_debug("final mode = %d, bw_mode_bitmap = %d\n", mode,
 			ctl->mdata->bw_mode_bitmap);
 
-	/* Return minimum bandwidth limit */
-	for (i = 0; i < ctl->mdata->max_bw_settings_cnt; i++) {
-		if (max_bw_settings[i].mdss_max_bw_mode & mode) {
+	/* Select BW mode with smallest limit */
+	while (mode) {
+		if (mode & BIT(0)) {
 			threshold = max_bw_settings[i].mdss_max_bw_val;
 			if (threshold < max)
 				max = threshold;
 		}
+		mode >>= 1;
+		i++;
 	}
 
 	return max;
@@ -1031,54 +1048,13 @@ int mdss_mdp_perf_bw_check(struct mdss_mdp_ctl *ctl,
 	return 0;
 }
 
-static u32 mdss_mdp_get_max_pipe_bw(struct mdss_mdp_pipe *pipe)
-{
-
-	struct mdss_mdp_ctl *ctl = pipe->mixer_left->ctl;
-	struct mdss_max_bw_settings *max_per_pipe_bw_settings;
-	u32 flags = 0, threshold = 0, panel_orientation;
-	u32 i, max = INT_MAX;
-
-	if (!ctl->mdata->mdss_per_pipe_bw_cnt
-			&& !ctl->mdata->max_per_pipe_bw_settings)
-		return 0;
-
-	panel_orientation = ctl->mfd->panel_orientation;
-	max_per_pipe_bw_settings = ctl->mdata->max_per_pipe_bw_settings;
-
-	/* Check for panel orienatation */
-	panel_orientation = ctl->mfd->panel_orientation;
-	if (panel_orientation & MDP_FLIP_LR)
-		flags |= MDSS_MAX_BW_LIMIT_HFLIP;
-	if (panel_orientation & MDP_FLIP_UD)
-		flags |= MDSS_MAX_BW_LIMIT_VFLIP;
-
-	/* check for Hflip/Vflip in pipe */
-	if (pipe->flags & MDP_FLIP_LR)
-		flags |= MDSS_MAX_BW_LIMIT_HFLIP;
-	if (pipe->flags & MDP_FLIP_UD)
-		flags |= MDSS_MAX_BW_LIMIT_VFLIP;
-
-	flags |= ctl->mdata->bw_mode_bitmap;
-
-	for (i = 0; i < ctl->mdata->mdss_per_pipe_bw_cnt; i++) {
-		if (max_per_pipe_bw_settings[i].mdss_max_bw_mode & flags) {
-			threshold = max_per_pipe_bw_settings[i].mdss_max_bw_val;
-			if (threshold < max)
-				max = threshold;
-		}
-	}
-
-	return max;
-}
-
 int mdss_mdp_perf_bw_check_pipe(struct mdss_mdp_perf_params *perf,
 		struct mdss_mdp_pipe *pipe)
 {
 	struct mdss_data_type *mdata = pipe->mixer_left->ctl->mdata;
 	struct mdss_mdp_ctl *ctl = pipe->mixer_left->ctl;
 	u32 vbp_fac, threshold;
-	u64 prefill_bw, pipe_bw, max_pipe_bw;
+	u64 prefill_bw, pipe_bw;
 
 	/* we only need bandwidth check on real-time clients (interfaces) */
 	if (ctl->intf_type == MDSS_MDP_NO_INTF)
@@ -1094,11 +1070,6 @@ int mdss_mdp_perf_bw_check_pipe(struct mdss_mdp_perf_params *perf,
 	pipe_bw = DIV_ROUND_UP_ULL(pipe_bw, 1000);
 
 	threshold = mdata->max_bw_per_pipe;
-	max_pipe_bw = mdss_mdp_get_max_pipe_bw(pipe);
-
-	if (max_pipe_bw && (max_pipe_bw < threshold))
-		threshold = max_pipe_bw;
-
 	pr_debug("bw=%llu threshold=%u\n", pipe_bw, threshold);
 
 	if (threshold && pipe_bw > threshold) {
@@ -3475,7 +3446,7 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 	}
 
 	ATRACE_BEGIN("postproc_programming");
-	if (ctl->is_video_mode && ctl->mfd && ctl->mfd->dcm_state != DTM_ENTER)
+	if (ctl->mfd && ctl->mfd->dcm_state != DTM_ENTER)
 		/* postprocessing setup, including dspp */
 		mdss_mdp_pp_setup_locked(ctl);
 
@@ -3518,14 +3489,6 @@ int mdss_mdp_display_commit(struct mdss_mdp_ctl *ctl, void *arg,
 			ATRACE_END("wait_pingpong sctl");
 		}
 	}
-
-	/*
-	 * Moved pp programming to post ping pong
-	 */
-	if (!ctl->is_video_mode && ctl->mfd && ctl->mfd->dcm_state != DTM_ENTER)
-		/* postprocessing setup, including dspp */
-		mdss_mdp_pp_setup_locked(ctl);
-
 	if (commit_cb)
 		commit_cb->commit_cb_fnc(MDP_COMMIT_STAGE_READY_FOR_KICKOFF,
 			commit_cb->data);

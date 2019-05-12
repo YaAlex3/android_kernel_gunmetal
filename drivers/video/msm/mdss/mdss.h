@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -129,7 +129,6 @@ struct mdss_data_type {
 	struct regulator *batfet;
 	u32 max_mdp_clk_rate;
 	struct mdss_util_intf *mdss_util;
-	struct mdss_panel_data *pdata;
 
 	struct platform_device *pdev;
 	struct dss_io_data mdss_io;
@@ -267,10 +266,6 @@ struct mdss_data_type {
 	struct mdss_max_bw_settings *max_bw_settings;
 	u32 bw_mode_bitmap;
 	u32 max_bw_settings_cnt;
-
-	struct mdss_max_bw_settings *max_per_pipe_bw_settings;
-	u32 mdss_per_pipe_bw_cnt;
-	u32 min_bw_per_pipe;
 };
 extern struct mdss_data_type *mdss_res;
 

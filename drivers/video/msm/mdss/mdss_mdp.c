@@ -584,6 +584,59 @@ void mdss_mdp_irq_disable_nosync(u32 intr_type, u32 intf_num)
 	}
 }
 
+//ASUS_BSP: Louis +++
+static struct work_struct mdp_clk_work;
+static bool g_max_clk_en;
+unsigned long mdp_clk_rate_restore = 200000000;
+int MdpBoostUp = 0;
+
+void mdss_set_mdp_max_clk(bool boostup)
+{
+    g_max_clk_en = boostup;
+
+	schedule_work(&mdp_clk_work);
+
+    return;
+}
+
+static void clk_ctrl_work(struct work_struct *work)
+{
+    struct mdss_data_type *mdata = mdss_res;
+    struct clk *clk = mdss_mdp_get_clk(MDSS_CLK_MDP_SRC);
+    unsigned long clk_rate;
+
+    if (mdata == NULL)
+        return;
+
+    mutex_lock(&mdp_clk_lock);
+
+    if (clk) {
+        if (g_max_clk_en) {
+            printk("[Display] Start Mdp_Clk boost\n");
+            clk_rate = mdata->max_mdp_clk_rate;
+            if (clk_rate != clk_get_rate(clk)) {
+                if (IS_ERR_VALUE(clk_set_rate(clk, clk_rate)))
+                    pr_err("clk_set_rate failed\n");
+            }
+        } else if (!g_max_clk_en) {
+            printk("[Display] Stop Mdp_Clk boost\n");
+            clk_rate = mdp_clk_rate_restore;
+            clk_rate = clk_round_rate(clk, clk_rate);
+            if (IS_ERR_VALUE(clk_rate)) {
+                pr_err("unable to round rate err=%ld\n", clk_rate);
+            } else if (clk_rate != clk_get_rate(clk)) {
+                if (IS_ERR_VALUE(clk_set_rate(clk, clk_rate)))
+                    pr_err("clk_set_rate failed\n");
+            }
+        }
+    } else {
+        pr_err("mdp src clk not setup properly\n");
+    }
+
+    mutex_unlock(&mdp_clk_lock);
+}
+//ASUS_BSP: Louis ---
+
 static int mdss_mdp_clk_update(u32 clk_idx, u32 enable)
 {
 	int ret = -ENODEV;
@@ -631,6 +684,12 @@ void mdss_mdp_set_clk_rate(unsigned long rate)
 			clk_rate = clk_round_rate(clk, min_clk_rate);
 		else
 			clk_rate = mdata->max_mdp_clk_rate;
+        //ASUS_BSP: Louis +++
+        mdp_clk_rate_restore = clk_rate;
+        if (g_max_clk_en) {
+            clk_rate = mdata->max_mdp_clk_rate;
+        }
+        //ASUS_BSP: Louis ---
 		if (IS_ERR_VALUE(clk_rate)) {
 			pr_err("unable to round rate err=%ld\n", clk_rate);
 		} else if (clk_rate != clk_get_rate(clk)) {
@@ -1173,10 +1232,6 @@ int mdss_hw_init(struct mdss_data_type *mdata)
 		writel_relaxed(1, offset + 16);
 	}
 
-	/* initialize csc matrix default value */
-	for (i = 0; i < mdata->nvig_pipes; i++)
-		vig[i].csc_coeff_set = MDSS_MDP_CSC_YUV2RGB_709L;
-
 	mdata->nmax_concurrent_ad_hw =
 		(mdata->mdp_rev < MDSS_MDP_HW_REV_103) ? 1 : 2;
 
@@ -1346,6 +1401,8 @@ static int mdss_mdp_parse_dt_pan_intf(struct platform_device *pdev)
 	return rc;
 }
 
+#define LK_DISP_READY 1	//ASUS_BSP:Louis +++
+
 static int mdss_mdp_get_cmdline_config(struct platform_device *pdev)
 {
 	int rc, len = 0;
@@ -1360,7 +1417,12 @@ static int mdss_mdp_get_cmdline_config(struct platform_device *pdev)
 	intf_type = &pan_cfg->pan_intf;
 
 	/* reads from dt by default */
+#if LK_DISP_READY
 	pan_cfg->lk_cfg = true;
+#else
+	pan_cfg->lk_cfg = false;
+	goto dt_parse;
+#endif
 
 	len = strlen(mdss_mdp_panel);
 
@@ -1371,7 +1433,11 @@ static int mdss_mdp_get_cmdline_config(struct platform_device *pdev)
 			return rc;
 		}
 	}
-
+// ASUS_BSP Louis ++
+#if !LK_DISP_READY
+dt_parse:
+#endif
+// ASUS_BSP Louis --
 	rc = mdss_mdp_parse_dt_pan_intf(pdev);
 	/* if pref pan intf is not present */
 	if (rc)
@@ -1613,6 +1679,8 @@ probe_done:
 		mutex_destroy(&mdata->reg_lock);
 		mdss_res = NULL;
 	}
+
+    INIT_WORK(&mdp_clk_work, clk_ctrl_work);    //ASUS_BSP: Louis +++
 
 	return rc;
 }
@@ -2621,7 +2689,7 @@ static void mdss_mdp_parse_max_bandwidth(struct platform_device *pdev)
 	max_bw = of_get_property(pdev->dev.of_node, "qcom,max-bw-settings",
 			&max_bw_settings_cnt);
 
-	if (!max_bw || !max_bw_settings_cnt) {
+	if (!max_bw && !max_bw_settings_cnt) {
 		pr_debug("MDSS max bandwidth settings not found\n");
 		return;
 	}
@@ -2640,63 +2708,6 @@ static void mdss_mdp_parse_max_bandwidth(struct platform_device *pdev)
 
 	mdata->max_bw_settings = max_bw_settings;
 	mdata->max_bw_settings_cnt = max_bw_settings_cnt;
-}
-
-static void mdss_mdp_parse_per_pipe_bandwidth(struct platform_device *pdev)
-{
-
-	struct mdss_data_type *mdata = platform_get_drvdata(pdev);
-	struct mdss_max_bw_settings *max_bw_per_pipe_settings;
-	int max_bw_settings_cnt = 0;
-	const u32 *max_bw_settings;
-	u32 max_bw, min_bw, threshold, i = 0;
-
-	max_bw_settings = of_get_property(pdev->dev.of_node,
-			"qcom,max-bandwidth-per-pipe-kbps",
-			&max_bw_settings_cnt);
-
-	if (!max_bw_settings || !max_bw_settings_cnt) {
-		pr_debug("MDSS per pipe max bandwidth settings not found\n");
-		return;
-	}
-
-	/* Support targets where a common per pipe max bw is provided */
-	if ((max_bw_settings_cnt / sizeof(u32)) == 1) {
-		mdata->max_bw_per_pipe = be32_to_cpu(max_bw_settings[0]);
-		mdata->max_per_pipe_bw_settings = NULL;
-		pr_debug("Common per pipe max bandwidth provided\n");
-		return;
-	}
-
-	max_bw_settings_cnt /= 2 * sizeof(u32);
-
-	max_bw_per_pipe_settings = devm_kzalloc(&pdev->dev,
-		    sizeof(struct mdss_max_bw_settings) * max_bw_settings_cnt,
-		    GFP_KERNEL);
-	if (!max_bw_per_pipe_settings) {
-		pr_err("Memory allocation failed for max_bw_settings\n");
-		return;
-	}
-
-	mdss_mdp_parse_max_bw_array(max_bw_settings, max_bw_per_pipe_settings,
-					max_bw_settings_cnt);
-	mdata->max_per_pipe_bw_settings = max_bw_per_pipe_settings;
-	mdata->mdss_per_pipe_bw_cnt = max_bw_settings_cnt;
-
-	/* Calculate min and max allowed per pipe BW */
-	min_bw = mdata->max_bw_high;
-	max_bw = 0;
-
-	while (i < max_bw_settings_cnt) {
-		threshold = mdata->max_per_pipe_bw_settings[i].mdss_max_bw_val;
-		if (threshold > max_bw)
-			max_bw = threshold;
-		if (threshold < min_bw)
-			min_bw = threshold;
-		++i;
-	}
-	mdata->max_bw_per_pipe = max_bw;
-	mdata->min_bw_per_pipe = min_bw;
 }
 
 static int mdss_mdp_parse_dt_misc(struct platform_device *pdev)
@@ -2817,7 +2828,11 @@ static int mdss_mdp_parse_dt_misc(struct platform_device *pdev)
 	if (rc)
 		pr_debug("max bandwidth (high) property not specified\n");
 
-	mdss_mdp_parse_per_pipe_bandwidth(pdev);
+	rc = of_property_read_u32(pdev->dev.of_node,
+		"qcom,max-bandwidth-per-pipe-kbps", &mdata->max_bw_per_pipe);
+	if (rc)
+		pr_debug("max bandwidth (per pipe) property not specified\n");
+
 
 	mdss_mdp_parse_max_bandwidth(pdev);
 

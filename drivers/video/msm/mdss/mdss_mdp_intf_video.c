@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,6 +32,10 @@
 
 #define MDP_INTR_MASK_INTF_VSYNC(intf_num) \
 	(1 << (2 * (intf_num - MDSS_MDP_INTF0) + MDSS_MDP_IRQ_INTF_VSYNC))
+
+//ASUS_BSP: Louis ++
+extern int MdpBoostUp;
+//ASUS_BSP: Louis --
 
 /* intf timing settings */
 struct intf_timing_params {
@@ -213,7 +217,7 @@ static void mdss_mdp_video_intf_recovery(void *data, int event)
 			mutex_unlock(&ctl->offlock);
 			return;
 		} else {
-			pr_warn_once("line count is less. line_cnt = %d\n",
+			pr_warn("line count is less. line_cnt = %d\n",
 								line_cnt);
 			/* Add delay so that line count is in active region */
 			udelay(delay);
@@ -506,7 +510,6 @@ static int mdss_mdp_video_stop(struct mdss_mdp_ctl *ctl, int panel_power_state)
 	intfs_num = ctl->intf_num - MDSS_MDP_INTF0;
 	ret = mdss_mdp_video_intfs_stop(ctl, ctl->panel_data, intfs_num);
 	if (IS_ERR_VALUE(ret)) {
-		mutex_unlock(&ctl->offlock);
 		pr_err("unable to stop video interface: %d\n", ret);
 		return ret;
 	}
@@ -610,7 +613,7 @@ static int mdss_mdp_video_wait4comp(struct mdss_mdp_ctl *ctl, void *arg)
 		if (rc == 0) {
 			pr_warn("vsync wait timeout %d, fallback to poll mode\n",
 					ctl->num);
-			ctx->polling_en = true;
+			ctx->polling_en++;
 			rc = mdss_mdp_video_pollwait(ctl);
 		} else {
 			rc = 0;
@@ -657,6 +660,11 @@ static void mdss_mdp_video_underrun_intr_done(void *arg)
 
 	if (ctl->opmode & MDSS_MDP_CTL_OP_PACK_3D_ENABLE)
 		schedule_work(&ctl->recover_work);
+
+    //ASUS_BSP: Louis +++, "boostup mdp in 10 frames update"
+    MdpBoostUp = 10;
+    mdss_set_mdp_max_clk(1);
+    //ASUS_BSP: Louis ---
 }
 
 static int mdss_mdp_video_vfp_fps_update(struct mdss_mdp_video_ctx *ctx,

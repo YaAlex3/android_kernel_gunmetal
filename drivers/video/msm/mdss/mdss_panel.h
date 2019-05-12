@@ -24,7 +24,14 @@ struct panel_id {
 	u16 id;
 	u16 type;
 };
-
+#ifndef CONFIG_ASUS_ZC550KL_PROJECT
+//ASUS_BSP: Louis ++
+struct panel_list {
+	char name[16];
+	uint32_t lcd_id;
+};
+//ASUS_BSP: Louis --
+#endif
 #define DEFAULT_FRAME_RATE	60
 #define DEFAULT_ROTATOR_FRAME_RATE 120
 #define MDSS_DSI_RST_SEQ_LEN	10
@@ -45,10 +52,9 @@ struct panel_id {
 #define LVDS_PANEL		11	/* LVDS */
 #define EDP_PANEL		12	/* LVDS */
 
-
 static inline const char *mdss_panel2str(u32 panel)
 {
-	static const char *names[] = {
+	static const char const *names[] = {
 #define PANEL_NAME(n) [n ## _PANEL] = __stringify(n)
 		PANEL_NAME(MIPI_VIDEO),
 		PANEL_NAME(MIPI_CMD),

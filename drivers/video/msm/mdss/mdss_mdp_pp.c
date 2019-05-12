@@ -24,79 +24,7 @@
 #include <linux/msm-bus-board.h>
 
 struct mdp_csc_cfg mdp_csc_convert[MDSS_MDP_MAX_CSC] = {
-	[MDSS_MDP_CSC_YUV2RGB_601L] = {
-		0,
-		{
-			0x0254, 0x0000, 0x0331,
-			0x0254, 0xff37, 0xfe60,
-			0x0254, 0x0409, 0x0000,
-		},
-		{ 0xfff0, 0xff80, 0xff80,},
-		{ 0x0, 0x0, 0x0,},
-		{ 0x10, 0xeb, 0x10, 0xf0, 0x10, 0xf0,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	},
-	[MDSS_MDP_CSC_YUV2RGB_601FR] = {
-		0,
-		{
-			0x0200, 0x0000, 0x02ce,
-			0x0200, 0xff50, 0xfe92,
-			0x0200, 0x038b, 0x0000,
-		},
-		{ 0x0000, 0xff80, 0xff80,},
-		{ 0x0, 0x0, 0x0,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	},
-	[MDSS_MDP_CSC_YUV2RGB_709L] = {
-		0,
-		{
-			0x0254, 0x0000, 0x0396,
-			0x0254, 0xff93, 0xfeef,
-			0x0254, 0x043e, 0x0000,
-		},
-		{ 0xfff0, 0xff80, 0xff80,},
-		{ 0x0, 0x0, 0x0,},
-		{ 0x10, 0xeb, 0x10, 0xf0, 0x10, 0xf0,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	},
-	[MDSS_MDP_CSC_RGB2YUV_601L] = {
-		0,
-		{
-			0x0083, 0x0102, 0x0032,
-			0xffb4, 0xff6b, 0x00e1,
-			0x00e1, 0xff44, 0xffdb
-		},
-		{ 0x0, 0x0, 0x0,},
-		{ 0x0010, 0x0080, 0x0080,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-		{ 0x0010, 0x00eb, 0x0010, 0x00f0, 0x0010, 0x00f0,},
-	},
-	[MDSS_MDP_CSC_RGB2YUV_601FR] = {
-		0,
-		{
-			0x0099, 0x012d, 0x003a,
-			0xffaa, 0xff56, 0x0100,
-			0x0100, 0xff2a, 0xffd6
-		},
-		{ 0x0, 0x0, 0x0,},
-		{ 0x0000, 0x0080, 0x0080,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-	},
-	[MDSS_MDP_CSC_RGB2YUV_709L] = {
-		0,
-		{
-			0x005d, 0x013a, 0x0020,
-			0xffcc, 0xff53, 0x00e1,
-			0x00e1, 0xff34, 0xffeb
-		},
-		{ 0x0, 0x0, 0x0,},
-		{ 0x0010, 0x0080, 0x0080,},
-		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
-		{ 0x0010, 0x00eb, 0x0010, 0x00f0, 0x0010, 0x00f0,},
-	},
-	[MDSS_MDP_CSC_YUV2YUV] = {
+	[MDSS_MDP_CSC_RGB2RGB] = {
 		0,
 		{
 			0x0200, 0x0000, 0x0000,
@@ -108,7 +36,31 @@ struct mdp_csc_cfg mdp_csc_convert[MDSS_MDP_MAX_CSC] = {
 		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
 		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
 	},
-	[MDSS_MDP_CSC_RGB2RGB] = {
+	[MDSS_MDP_CSC_YUV2RGB] = {
+		0,
+		{
+			0x0254, 0x0000, 0x0331,
+			0x0254, 0xff37, 0xfe60,
+			0x0254, 0x0409, 0x0000,
+		},
+		{ 0xfff0, 0xff80, 0xff80,},
+		{ 0x0, 0x0, 0x0,},
+		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
+		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
+	},
+	[MDSS_MDP_CSC_RGB2YUV] = {
+		0,
+		{
+			0x0083, 0x0102, 0x0032,
+			0x1fb5, 0x1f6c, 0x00e1,
+			0x00e1, 0x1f45, 0x1fdc
+		},
+		{ 0x0, 0x0, 0x0,},
+		{ 0x0010, 0x0080, 0x0080,},
+		{ 0x0, 0xff, 0x0, 0xff, 0x0, 0xff,},
+		{ 0x0010, 0x00eb, 0x0010, 0x00f0, 0x0010, 0x00f0,},
+	},
+	[MDSS_MDP_CSC_YUV2YUV] = {
 		0,
 		{
 			0x0200, 0x0000, 0x0000,
@@ -487,7 +439,6 @@ static int pp_ad_linearize_bl(struct mdss_ad_info *ad, u32 bl, u32 *bl_out,
 static int pp_ad_calc_bl(struct msm_fb_data_type *mfd, int bl_in, int *bl_out,
 		bool *bl_out_notify);
 static int pp_ad_shutdown_cleanup(struct msm_fb_data_type *mfd);
-
 static int pp_num_to_side(struct mdss_mdp_ctl *ctl, u32 num);
 static inline bool pp_sts_is_enabled(u32 sts, int side);
 static inline void pp_sts_set_split_bits(u32 *sts, u32 bits);
@@ -918,20 +869,24 @@ static int pp_vig_pipe_setup(struct mdss_mdp_pipe *pipe, u32 *op)
 						MDP_CSC_FLAG_YUV_IN) << 18;
 			opmode |= !!(pipe->pp_cfg.csc_cfg.flags &
 						MDP_CSC_FLAG_YUV_OUT) << 19;
-
-			mdss_mdp_csc_setup_data(
-				MDSS_MDP_BLOCK_SSPP,
-				pipe->num,
-				&pipe->pp_cfg.csc_cfg);
-
+			/*
+			 * TODO: Allow pipe to be programmed whenever new CSC is
+			 * applied (i.e. dirty bit)
+			 */
+			mdss_mdp_csc_setup_data(MDSS_MDP_BLOCK_SSPP, pipe->num,
+					&pipe->pp_cfg.csc_cfg);
 	} else {
 		if (pipe->src_fmt->is_yuv) {
 			opmode |= (0 << 19) |	/* DST_DATA=RGB */
 				  (1 << 18) |	/* SRC_DATA=YCBCR */
 				  (1 << 17);	/* CSC_1_EN */
-
+			/*
+			 * TODO: Needs to be part of dirty bit logic: if there
+			 * is a previously configured pipe need to re-configure
+			 * CSC matrix
+			 */
 			mdss_mdp_csc_setup(MDSS_MDP_BLOCK_SSPP, pipe->num,
-					   pp_vig_csc_pipe_val(pipe));
+					   MDSS_MDP_CSC_YUV2RGB);
 		}
 	}
 
@@ -3434,11 +3389,6 @@ int mdss_mdp_gamut_config(struct mdp_gamut_cfg_data *config,
 		*copyback = 1;
 		mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF);
 	} else {
-		if (pp_gm_has_invalid_lut_size(config)) {
-			pr_err("invalid lut size for gamut\n");
-			ret = -EINVAL;
-			goto gamut_config_exit;
-		}
 		local_cfg = *config;
 		tbl_off = mdss_pp_res->gamut_tbl[disp_num];
 		for (i = 0; i < MDP_GAMUT_TABLE_NUM; i++) {
@@ -4668,7 +4618,7 @@ int mdss_mdp_ad_input(struct msm_fb_data_type *mfd,
 	mutex_lock(&ad->lock);
 	if ((!PP_AD_STATE_IS_INITCFG(ad->state) &&
 			!PP_AD_STS_IS_DIRTY(ad->sts)) &&
-			!(input->mode == MDSS_AD_MODE_CALIB)) {
+			!input->mode == MDSS_AD_MODE_CALIB) {
 		pr_warn("AD not initialized or configured.\n");
 		ret = -EPERM;
 		goto error;
@@ -4727,7 +4677,6 @@ int mdss_mdp_ad_input(struct msm_fb_data_type *mfd,
 			mdss_fb_set_backlight(mfd, bl);
 			mutex_unlock(&mfd->bl_lock);
 			mutex_lock(&ad->lock);
-			mfd->calib_mode_bl = bl;
 		} else {
 			pr_warn("should be in calib mode\n");
 		}
@@ -5260,11 +5209,10 @@ static int  pp_ad_attenuate_bl(struct mdss_ad_info *ad, u32 bl, u32 *bl_out)
 		return -EINVAL;
 	}
 	lut_interval = (MDSS_MDP_AD_BL_SCALE + 1) / (AD_BL_ATT_LUT_LEN - 1);
-	bl_att = ((ad->bl_att_lut[n + 1] - ad->bl_att_lut[n]) *
-		(bl - lut_interval * n) + (ad->bl_att_lut[n] * lut_interval)) /
-		lut_interval;
-	pr_debug("n = %u, bl_att_lut[%u] = %u, bl_att_lut[%u] = %u, bl_att = %u\n",
-		n, n, ad->bl_att_lut[n], n + 1, ad->bl_att_lut[n + 1], bl_att);
+	bl_att = ad->bl_att_lut[n] + (bl - lut_interval * n) *
+			(ad->bl_att_lut[n + 1] - ad->bl_att_lut[n]) /
+			lut_interval;
+	pr_debug("n = %d, bl_att = %d\n", n, bl_att);
 	if (ad->init.alpha_base)
 		*bl_out = (ad->init.alpha * bl_att +
 			(ad->init.alpha_base - ad->init.alpha) * bl) /
@@ -5287,7 +5235,6 @@ static int pp_ad_linearize_bl(struct mdss_ad_info *ad, u32 bl, u32 *bl_out,
 {
 
 	u32 n;
-	uint32_t *bl_lut = NULL;
 	int ret = -EINVAL;
 
 	if (bl < 0 || bl > ad->bl_mfd->panel_info->bl_max) {
@@ -5297,14 +5244,6 @@ static int pp_ad_linearize_bl(struct mdss_ad_info *ad, u32 bl, u32 *bl_out,
 	}
 
 	pr_debug("bl_in = %d, inv = %d\n", bl, inv);
-	if (inv == MDP_PP_AD_BL_LINEAR_INV) {
-		bl_lut = ad->bl_lin;
-	} else if (inv == MDP_PP_AD_BL_LINEAR) {
-		bl_lut = ad->bl_lin_inv;
-	} else {
-		pr_err("invalid inv param: inv = %d\n", inv);
-		return -EINVAL;
-	}
 
 	/* map panel backlight range to AD backlight range */
 	linear_map(bl, &bl, ad->bl_mfd->panel_info->bl_max,
@@ -5312,19 +5251,30 @@ static int pp_ad_linearize_bl(struct mdss_ad_info *ad, u32 bl, u32 *bl_out,
 
 	pr_debug("Before linearization = %d\n", bl);
 	n = bl * (AD_BL_LIN_LEN - 1) / MDSS_MDP_AD_BL_SCALE;
-	pr_debug("n = %u\n", n);
+	pr_debug("n = %d\n", n);
 	if (n > (AD_BL_LIN_LEN - 1)) {
 		pr_err("Invalid index for BL linearization: %d.\n", n);
 		return ret;
 	} else if (n == (AD_BL_LIN_LEN - 1)) {
-		*bl_out = bl_lut[n];
+		if (inv == MDP_PP_AD_BL_LINEAR_INV)
+			*bl_out = ad->bl_lin_inv[n];
+		else if (inv == MDP_PP_AD_BL_LINEAR)
+			*bl_out = ad->bl_lin[n];
 	} else {
 		/* linear piece-wise interpolation */
-		*bl_out = ((bl_lut[n + 1] - bl_lut[n]) *
-			(bl - n * MDSS_MDP_AD_BL_SCALE /
-			(AD_BL_LIN_LEN  - 1)) + bl_lut[n] *
-			MDSS_MDP_AD_BL_SCALE / (AD_BL_LIN_LEN  - 1)) *
-			(AD_BL_LIN_LEN  - 1) / MDSS_MDP_AD_BL_SCALE;
+		if (inv == MDP_PP_AD_BL_LINEAR_INV) {
+			*bl_out = bl * (AD_BL_LIN_LEN - 1) *
+				(ad->bl_lin_inv[n + 1] - ad->bl_lin_inv[n]) /
+				MDSS_MDP_AD_BL_SCALE - n *
+				(ad->bl_lin_inv[n + 1] - ad->bl_lin_inv[n]) +
+				ad->bl_lin_inv[n];
+		} else if (inv == MDP_PP_AD_BL_LINEAR) {
+			*bl_out = bl * (AD_BL_LIN_LEN - 1) *
+				(ad->bl_lin[n + 1] - ad->bl_lin[n]) /
+				MDSS_MDP_AD_BL_SCALE -
+				n * (ad->bl_lin[n + 1] - ad->bl_lin[n]) +
+				ad->bl_lin[n];
+		}
 	}
 	pr_debug("After linearization = %d\n", *bl_out);
 
@@ -5713,9 +5663,6 @@ int mdss_mdp_calib_mode(struct msm_fb_data_type *mfd,
 		return -EINVAL;
 	mutex_lock(&mdss_pp_mutex);
 	mfd->calib_mode = cfg->calib_mask;
-	mutex_lock(&mfd->bl_lock);
-	mfd->calib_mode_bl = mfd->bl_level;
-	mutex_unlock(&mfd->bl_lock);
 	mutex_unlock(&mdss_pp_mutex);
 	return 0;
 }
