@@ -4,13 +4,13 @@
 ## AnyKernel setup
 # begin properties
 properties() {
-kernel.string=BlackMagic by SakilMondal @ xda-developers
+kernel.string=GunMetal by YaAlex @ xda-developers
 do.devicecheck=0
 do.modules=0
 do.cleanup=1
 do.cleanuponabort=0
 device.name1=Z010D
-device.name2=
+device.name2=Z010DD
 device.name3=
 device.name4=
 device.name5=
