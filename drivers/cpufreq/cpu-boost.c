@@ -50,8 +50,10 @@ static struct work_struct input_boost_work;
 static unsigned int boost_ms;
 module_param(boost_ms, uint, 0644);
 
-static bool input_boost_enabled = false;
-module_param(input_boost_enabled, bool, 0644);
+static unsigned int sync_threshold;
+module_param(sync_threshold, uint, 0644);
+
+static bool input_boost_enabled;
 
 static unsigned int input_boost_ms = 40;
 module_param(input_boost_ms, uint, 0644);
