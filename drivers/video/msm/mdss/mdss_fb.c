@@ -833,6 +833,7 @@ static void mdss_fb_remove_sysfs(struct msm_fb_data_type *mfd)
 {
 	sysfs_remove_group(&mfd->fbi->dev->kobj, &mdss_fb_attr_group);
 }
+int fb_shutdown = 0;
 
 static void mdss_fb_shutdown(struct platform_device *pdev)
 {
