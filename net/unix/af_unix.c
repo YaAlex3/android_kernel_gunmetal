@@ -1690,9 +1690,6 @@ restart_locked:
 		if (!sk_locked)
 			unix_state_lock(sk);
 
-		if (!sk_locked)
-			unix_state_lock(sk);
-
 		err = 0;
 		if (unix_peer(sk) == other) {
 			unix_peer(sk) = NULL;
