@@ -1,0 +1,38 @@
+
+# Thermal
+on boot
+	write /sys/module/msm_thermal/parameters/enabled Y
+	write /sys/module/msm_thermal/parameters/limit_temp_degC 75
+	write /sys/module/msm_thermal/parameters/core_limit_temp_degC 88
+
+# Little Cluster
+
+    write /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor interactive
+    write /sys/devices/system/cpu/cpu0/cpufreq/scaling_min_freq 533000
+    write /sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq 1209600
+    write /sys/devices/system/cpu/cpu0/cpufreq/interactive/above_hispeed_delay "19000 1209600:29000"
+    write /sys/devices/system/cpu/cpu0/cpufreq/interactive/go_hispeed_load 99
+    write /sys/devices/system/cpu/cpu0/cpufreq/interactive/hispeed_freq 1209600
+    write /sys/devices/system/cpu/cpu0/cpufreq/interactive/target_loads "1 200000:10 400000:20 533000:33 800000:50 998400:70 1094400:75 1152000:80"
+
+    write /sys/module/workqueue/parameters/power_efficient Y
+
+# GPU
+
+    write /sys/class/kgsl/kgsl-3d0/devfreq/adrenoboost 0
+    write /sys/module/adreno_idler/parameters/adreno_idler_active 1
+    write /sys/module/adreno_idler/parameters/adreno_idler_workload 7000
+    write /sys/module/adreno_idler/parameters/adreno_idler_idlewait 20
+
+# I/O Scheduler
+
+    write /sys/block/mmcblk0/queue/read_ahead_kb 512
+    write /sys/block/mmcblk0/queue/scheduler row
+
+# Thermal
+	write /sys/module/msm_thermal/parameters/enabled Y
+	write /sys/module/msm_thermal/parameters/limit_temp_degC 78
+	write /sys/module/msm_thermal/parameters/core_limit_temp_degC 85
+
+# Limiter
+	write /sys/kernel/msm_limiter/freq_control 1
