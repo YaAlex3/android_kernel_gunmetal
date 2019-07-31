@@ -74,7 +74,6 @@ static void kcal_mode_save_prev(struct device *dev) {
     prev_kcal_sat = lut_data->sat;
     prev_kcal_val = lut_data->val;
     prev_kcal_cont = lut_data->cont;
-    prev_backlight_dimmer = backlight_dimmer;
 
 }
 
@@ -89,7 +88,6 @@ static void kcal_mode_save_mode(struct device *dev) {
     lut_data->sat = mode_kcal_sat;
     lut_data->val = mode_kcal_val;
     lut_data->cont = mode_kcal_cont;
-    backlight_dimmer = mode_backlight_dimmer;
 
 }
 
