@@ -14,7 +14,7 @@ VERSION="R4"
 DATE=$(date +"%d-%m-%Y-%I-%M")
 DEVICE="Z010D"
 FINAL_ZIP=$KERNEL_NAME-$VERSION-$DATE-$DEVICE.zip
-BRANCH="9.x"
+BRANCH="9.x-micron"
 defconfig=zc550kl-custom_defconfig
 
 # Dirs
