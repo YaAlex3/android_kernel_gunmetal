@@ -32,9 +32,9 @@ export CROSS_COMPILE=$(pwd)/aarch64-elf-gcc/bin/aarch64-elf-
 # Clone
 # Toolchain
 git clone https://github.com/kdrag0n/aarch64-elf-gcc
+ranlib $(pwd)/aarch64-elf-gcc/lib/gcc/aarch64-elf/9.1.0/libgcc.a
 # Telegram
 git clone https://github.com/fabianonline/telegram.sh.git 
-mv ./telegram.sh/telegram ./telegram
 
 # Make kernel
   echo -e "$cyan***********************************************"
@@ -56,7 +56,7 @@ mkdir -p $UPLOAD_DIR
 cd $ANYKERNEL_DIR
 zip -r9 UPDATE-AnyKernel3.zip *
 mv $ANYKERNEL_DIR/UPDATE-AnyKernel3.zip $UPLOAD_DIR/$FINAL_ZIP
-./telegram -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME build available!
+$(pwd)/telegram.sh/telegram -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME build available!
 Version: $VERSION
 Date: $DATE
 Build start: $BUILD_START
