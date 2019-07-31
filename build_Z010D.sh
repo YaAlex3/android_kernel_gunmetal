@@ -56,7 +56,7 @@ mkdir -p $UPLOAD_DIR
 cd $ANYKERNEL_DIR
 zip -r9 UPDATE-AnyKernel3.zip *
 mv $ANYKERNEL_DIR/UPDATE-AnyKernel3.zip $UPLOAD_DIR/$FINAL_ZIP
-$(pwd)/../telegram.sh/telegram -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME build available!
+$(pwd)/../telegram.sh/telegram -M -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME build available!
 Version: $VERSION
 Date: $DATE
 Branch: $BRANCH
