@@ -1284,22 +1284,8 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 		return;
 	}
 
-	if (
-#ifndef CONFIG_LEDS_TRIGGER_BACKLIGHT
-	    (((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
-		|| !mfd->allow_bl_updated) && !IS_CALIB_MODE_BL(mfd)) ||
-#endif
-		mfd->panel_info->cont_splash_enabled) {
-		if((0 == temp) &&(0 == strcmp(boot_to_charger_mode,"charger"))
-			&& ((asus_lcd_id[0] == '0') || (asus_lcd_id[0] == '1')))
-		{
-		    pr_debug("%s: turn off backlight for 550 hd panel\n",__FUNCTION__);
-			pdata = dev_get_platdata(&mfd->pdev->dev);
-			ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
-				panel_data);
-			if ((pdata) && (ctrl_pdata))
-				gpio_set_value((ctrl_pdata->bklt_en_gpio), 0);
-		}
+	if ((((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
+		|| !mfd->allow_bl_update) && !IS_CALIB_MODE_BL(mfd)) ||
 		mfd->unset_bl_level = bkl_lvl;
 		return;
 	} else {
