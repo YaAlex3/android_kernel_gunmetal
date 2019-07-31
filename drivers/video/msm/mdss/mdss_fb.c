@@ -892,12 +892,7 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	mfd->mdp_fb_page_protection = MDP_FB_PAGE_PROTECTION_WRITECOMBINE;
 
 	mfd->ext_ad_ctrl = -1;
-	if (mfd->panel_info && mfd->panel_info->brightness_max > 0)
-		MDSS_BRIGHT_TO_BL(mfd->bl_level,
-			backlight_led.brightness, mfd->panel_info->bl_max,
-					mfd->panel_info->brightness_max);
-	else
-		mfd->bl_level = 0;
+	mfd->bl_level = 0;
 
 	mfd->bl_scale = 1024;
 	mfd->bl_min_lvl = 30;
@@ -1273,7 +1268,6 @@ static void mdss_fb_scale_bl(struct msm_fb_data_type *mfd, u32 *bl_lvl)
 void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 {
 	struct mdss_panel_data *pdata;
-	struct mdss_dsi_ctrl_pdata *ctrl_pdata = NULL;
 	u32 temp = bkl_lvl;
 	bool bl_notify_needed = false;
 
@@ -1286,6 +1280,7 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 
 	if ((((mdss_fb_is_power_off(mfd) && mfd->dcm_state != DCM_ENTER)
 		|| !mfd->allow_bl_update) && !IS_CALIB_MODE_BL(mfd)) ||
+		mfd->panel_info->cont_splash_enabled) {
 		mfd->unset_bl_level = bkl_lvl;
 		return;
 	} else {
