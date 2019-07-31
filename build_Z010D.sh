@@ -14,6 +14,7 @@ VERSION="R4"
 DATE=$(date +"%d-%m-%Y-%I-%M")
 DEVICE="Z010D"
 FINAL_ZIP=$KERNEL_NAME-$VERSION-$DATE-$DEVICE.zip
+BRANCH="9.x"
 defconfig=zc550kl-custom_defconfig
 
 # Dirs
@@ -35,7 +36,7 @@ ranlib $(pwd)/aarch64-elf-gcc/lib/gcc/aarch64-elf/9.1.0/libgcc.a
 # Telegram
 git clone https://github.com/fabianonline/telegram.sh.git 
 
-# Make kernelmne250let
+# Make kernel
   echo -e "$cyan***********************************************"
   echo -e "          Initializing defconfig          "
   echo -e "***********************************************$nocol"
@@ -58,8 +59,8 @@ mv $ANYKERNEL_DIR/UPDATE-AnyKernel3.zip $UPLOAD_DIR/$FINAL_ZIP
 $(pwd)/../telegram.sh/telegram -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME build available!
 Version: $VERSION
 Date: $DATE
-Build start: $BUILD_START
-Build completed in $DIFF"
+Branch: $BRANCH
+Changelog: [GitHub](https://github.com/YaAlex3/android_kernel_gunmetal/commits/$BRANCH)"
 }
 
      echo -e "$cyan***********************************************"
