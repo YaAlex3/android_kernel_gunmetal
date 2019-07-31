@@ -17,18 +17,24 @@ FINAL_ZIP=$KERNEL_NAME-$VERSION-$DATE-$DEVICE.zip
 defconfig=zc550kl-custom_defconfig
 
 # Dirs
-KERNEL_DIR=/home/yaalex3/android/kernel/
+KERNEL_DIR=$(pwd)
 ANYKERNEL_DIR=$KERNEL_DIR/AnyKernel3
 KERNEL_IMG=$KERNEL_DIR/out/arch/arm64/boot/Image.gz-dtb
-UPLOAD_DIR=/home/yaalex3/out
+UPLOAD_DIR=$(pwd)out-zip/
 
 # Export
 export ARCH=arm64
-export CROSS_COMPILE=/home/yaalex3/android/aarch64-elf-gcc/bin/aarch64-elf-
+export CROSS_COMPILE=$(pwd)aarch64-elf-gcc/bin/aarch64-elf-
 
 # Toolchain Used: https://github.com/kdrag0n/aarch64-elf-gcc
 
 ## Functions ##
+# Clone
+# Toolchain
+git clone https://github.com/kdrag0n/aarch64-elf-gcc
+# Telegram
+git clone https://github.com/fabianonline/telegram.sh.git 
+mv ./telegram.sh/telegram ./telegram
 
 # Make kernel
   echo -e "$cyan***********************************************"
@@ -50,6 +56,11 @@ mkdir -p $UPLOAD_DIR
 cd $ANYKERNEL_DIR
 zip -r9 UPDATE-AnyKernel2.zip *
 mv $ANYKERNEL_DIR/UPDATE-AnyKernel2.zip $UPLOAD_DIR/$FINAL_ZIP
+./telegram -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME build available!
+Version: $VERSION
+Date: $DATE
+Build start: $BUILD_START
+Build completed in $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) seconds."
 }
 
      echo -e "$cyan***********************************************"
