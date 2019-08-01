@@ -71,7 +71,6 @@
 #include <linux/signalfd.h>
 #include <linux/uprobes.h>
 #include <linux/aio.h>
-#include <linux/cpu_boost.h>
 #include <linux/simple_lmk.h>
 
 #include <asm/pgtable.h>
