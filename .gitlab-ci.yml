@@ -7,5 +7,5 @@ before_script:
 build1:
   stage: build
   script:
-    - sudo bash ./build_Z010D.sh
+    - bash ./build_Z010D.sh
 
