@@ -14,7 +14,7 @@ VERSION="R5"
 DATE=$(date +"%d-%m-%Y-%I-%M")
 DEVICE="Z010D"
 FINAL_ZIP=$KERNEL_NAME-$VERSION-$DATE-$DEVICE.zip
-BRANCH="9.x"
+BRANCH="9.x-wip"
 defconfig=zc550kl-custom_defconfig
 
 # Dirs
@@ -47,7 +47,8 @@ make O=out zc550kl-custom_defconfig
   echo -e "             Building kernel          "
   echo -e "***********************************************$nocol"
 
-make O=out -j$(nproc --all)
+make O=out -j$(nproc --all) || $(pwd)/../telegram.sh/telegram "Build Failed!
+Go and fix errors!"
 
 # Making zip
 function make_zip() {
