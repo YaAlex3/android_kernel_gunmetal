@@ -12,7 +12,6 @@
  *
  */
 
-#include <asm/mach-types.h>
 #include <asm/page.h>
 #include <linux/export.h>
 #include <linux/kobject.h>
