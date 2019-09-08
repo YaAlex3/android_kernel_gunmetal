@@ -47,7 +47,7 @@ make O=out zc550kl-custom_defconfig
   echo -e "             Building kernel          "
   echo -e "***********************************************$nocol"
 
-make O=out -j$(nproc --all) || $(pwd)/../telegram.sh/telegram "Build Failed!
+make O=out -j$(nproc --all) || $(pwd)/telegram.sh/telegram "Build Failed!
 Go and fix errors!"
 
 # Making zip
