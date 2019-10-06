@@ -62,6 +62,8 @@ case "$soc_id" in
 		mv /tmp/anykernel/ramdisk/init.gunmetal.8939.rc /tmp/anykernel/ramdisk/init.gunmetal.rc
 	;;
 esac
+cp /tmp/anykernel/ramdisk/1-setprop.sh /system/etc/init.d/1-setprop.sh
+chmod +x /system/etc/init.d/1-setprop.sh
 write_boot;
 ## end install
 
