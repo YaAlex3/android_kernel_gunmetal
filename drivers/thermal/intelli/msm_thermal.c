@@ -81,7 +81,7 @@ static int limit_idx;
  * check your FREQ Table and set corect limit_idx_low freq number.
  * thanks git@dorimanx
  */
-static int limit_idx_low = 9;
+static int limit_idx_low = 6;
 static int limit_idx_high;
 static int max_tsens_num;
 static bool immediately_limit_stop = false;

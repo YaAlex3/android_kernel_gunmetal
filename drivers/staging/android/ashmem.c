@@ -263,24 +263,23 @@ static loff_t ashmem_llseek(struct file *file, loff_t offset, int origin)
 	mutex_lock(&ashmem_mutex);
 
 	if (asma->size == 0) {
-		ret = -EINVAL;
-		goto out;
+		mutex_unlock(&ashmem_mutex);
+		return -EINVAL;
 	}
 
 	if (!asma->file) {
-		ret = -EBADF;
-		goto out;
+		mutex_unlock(&ashmem_mutex);
+		return -EBADF;
 	}
 
-	ret = asma->file->f_op->llseek(asma->file, offset, origin);
+	mutex_unlock(&ashmem_mutex);
+
+	ret = vfs_llseek(asma->file, offset, origin);
 	if (ret < 0)
-		goto out;
+		return ret;
 
 	/** Copy f_pos from backing file, since f_ops->llseek() sets it */
 	file->f_pos = asma->file->f_pos;
-
-out:
-	mutex_unlock(&ashmem_mutex);
 	return ret;
 }
 
@@ -300,6 +299,12 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 
 	/* user needs to SET_SIZE before mapping */
 	if (unlikely(!asma->size)) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* requested mapping size larger than object size */
+	if (vma->vm_end - vma->vm_start > PAGE_ALIGN(asma->size)) {
 		ret = -EINVAL;
 		goto out;
 	}
@@ -325,6 +330,7 @@ static int ashmem_mmap(struct file *file, struct vm_area_struct *vma)
 			ret = PTR_ERR(vmfile);
 			goto out;
 		}
+		vmfile->f_mode |= FMODE_LSEEK;
 		asma->file = vmfile;
 	}
 	get_file(asma->file);
@@ -375,7 +381,7 @@ static int ashmem_shrink(struct shrinker *s, struct shrink_control *sc)
 		loff_t start = range->pgstart * PAGE_SIZE;
 		loff_t end = (range->pgend + 1) * PAGE_SIZE;
 
-		range->asma->file->f_op->fallocate(range->asma->file,
+		do_fallocate(range->asma->file,
 				FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
 				start, end - start);
 		range->purged = ASHMEM_WAS_PURGED;
@@ -672,10 +678,12 @@ static long ashmem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 	case ASHMEM_SET_SIZE:
 		ret = -EINVAL;
+		mutex_lock(&ashmem_mutex);
 		if (!asma->file) {
 			ret = 0;
 			asma->size = (size_t) arg;
 		}
+		mutex_unlock(&ashmem_mutex);
 		break;
 	case ASHMEM_GET_SIZE:
 		ret = asma->size;

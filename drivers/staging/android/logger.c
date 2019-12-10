@@ -37,8 +37,6 @@
 #define CONFIG_LOGCAT_SIZE 256
 #endif
 
-#include <linux/asus_global.h>
-extern struct _asus_global asus_global;
 /**
  * struct logger_log - represents a specific log, such as 'main' or 'radio'
  * @buffer:	The actual ring buffer
@@ -473,7 +471,6 @@ static ssize_t do_write_log_from_user(struct logger_log *log,
  * writev(), and aio_write(). Writes are our fast path, and we try to optimize
  * them above all else.
  */
-extern unsigned int asusdebug_enable;
 static ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 			 unsigned long nr_segs, loff_t ppos)
 {
@@ -483,9 +480,7 @@ static ssize_t logger_aio_write(struct kiocb *iocb, const struct iovec *iov,
 	struct timespec now;
 	ssize_t ret = 0;
 
-	getnstimeofday(&now);
-	if (asusdebug_enable==0x11223344)
-		return 0;
+	now = current_kernel_time();
 
 	header.pid = current->tgid;
 	header.tid = current->pid;

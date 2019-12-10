@@ -10,11 +10,11 @@ nocol='\033[0m'
 
 # Kernel details
 KERNEL_NAME="GunMetal™"
-VERSION="R5"
+VERSION="R6"
 DATE=$(date +"%d-%m-%Y-%I-%M")
 DEVICE="Z010D"
 FINAL_ZIP=$KERNEL_NAME-$VERSION-$DATE-$DEVICE.zip
-BRANCH="9.x-wip"
+BRANCH="9.x"
 defconfig=zc550kl-custom_defconfig
 
 # Dirs
@@ -32,9 +32,8 @@ export CROSS_COMPILE=$(pwd)/aarch64-elf-gcc/bin/aarch64-elf-
 # Clone
 # Toolchain
 git clone https://github.com/kdrag0n/aarch64-elf-gcc
-ranlib $(pwd)/aarch64-elf-gcc/lib/gcc/aarch64-elf/9.1.0/libgcc.a
 # Telegram
-git clone https://github.com/fabianonline/telegram.sh.git 
+git clone https://github.com/fabianonline/telegram.sh.git
 
 # Make kernel
   echo -e "$cyan***********************************************"
@@ -61,7 +60,7 @@ $(pwd)/../telegram.sh/telegram -M -f $UPLOAD_DIR/$FINAL_ZIP "New $KERNEL_NAME bu
 Version: $VERSION
 Date: $DATE
 Branch: $BRANCH
-Changelog: [GitHub](https://github.com/YaAlex3/android_kernel_gunmetal/commits/$BRANCH)"
+Changelog: GitHub: https://github.com/YaAlex3/android_kernel_gunmetal/commits/$BRANCH"
 }
 
      echo -e "$cyan***********************************************"
