@@ -14,6 +14,6 @@ jobs:
     - name: make
       run: ./build_Z010D.sh
       env:
-        TOKEN: 917053533:AAEi8_iMgJeobSZsNDf1KDm2Hgsq4O4r7Ww
-        CHAT_ID: @GunMetalCI
+        TOKEN: '917053533:AAEi8_iMgJeobSZsNDf1KDm2Hgsq4O4r7Ww'
+        CHAT_ID: '@GunMetalCI'
         
