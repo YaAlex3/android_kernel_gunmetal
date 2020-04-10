@@ -968,8 +968,10 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 		return -EINVAL;
 	}
 
+        ftxxxx_ts_resume();
+
 #ifdef CONFIG_POWERSUSPEND
-       set_power_suspend_state_panel_hook(POWER_SUSPEND_INACTIVE);
+        set_power_suspend_state_panel_hook(POWER_SUSPEND_INACTIVE);
 #endif
 
 	display_on = true;
@@ -992,22 +994,6 @@ static int mdss_dsi_panel_on(struct mdss_panel_data *pdata)
 
 	if (ctrl->on_cmds.cmd_cnt)
 		mdss_dsi_panel_cmds_send(ctrl, &ctrl->on_cmds);
-#ifndef CONFIG_ASUS_ZC550KL_PROJECT
-    set_tcon_cmd(cabc_mode, ARRAY_SIZE(cabc_mode)); //ASUS_BSP: Louis+++, restore cabc level
-	
-	rt4532_resume();/*Austin+++*/
-
-	ftxxxx_ts_resume();/*Jacob+++*/
-
-#ifdef CONFIG_QPNP_VM_BMS_SUSPEND_PREDICT
-	bms_modify_soc_late_resume();
-#endif
-#else
-
-	ftxxxx_ts_resume();		//Freeman +++
-
-#endif
-
 end:
 	pinfo->blank_state = MDSS_PANEL_BLANK_UNBLANK;
 	pr_debug("%s:-\n", __func__);
